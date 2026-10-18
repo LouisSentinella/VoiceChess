@@ -268,3 +268,21 @@ def test_ask_reports_a_dead_model_as_a_speakable_error(client):
 
 def test_ask_unknown_game_is_404(client):
     assert client.post("/game/nope/ask", json={"question": "hi"}).status_code == 404
+
+
+async def test_retries_without_the_reasoning_override_when_the_model_insists_on_reasoning():
+    bodies = []
+
+    def hosted(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "reasoning" in body:
+            return httpx.Response(400, text='{"error":{"message":"Reasoning is mandatory for this endpoint"}}')
+        return httpx.Response(200, text=sse("ok"))
+
+    llm = LlmClient(
+        [Backend("hosted", "https://hosted.test/v1", "m", "KEY", extra_body={"reasoning": {"enabled": False}})],
+        httpx.AsyncClient(transport=httpx.MockTransport(lambda r: hosted(r))),
+    )
+    assert "".join([c async for c in llm.stream([])]) == "ok"
+    assert ["reasoning" in b for b in bodies] == [True, False]

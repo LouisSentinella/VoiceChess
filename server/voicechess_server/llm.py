@@ -114,21 +114,27 @@ class LlmClient:
         }
         headers = {"Authorization": f"Bearer {b.api_key}"} if b.api_key else {}
         timeout = httpx.Timeout(b.read_timeout, connect=b.connect_timeout)
-        async with self._http.stream(
-            "POST", f"{b.base_url}/chat/completions", json=body, headers=headers, timeout=timeout
-        ) as r:
-            if r.status_code != 200:
-                detail = (await r.aread()).decode(errors="replace")[:200]
-                raise LlmError(f"HTTP {r.status_code} {detail}")
-            async for line in r.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    return
-                try:
-                    delta = json.loads(data)["choices"][0].get("delta", {})
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    continue
-                if text := delta.get("content"):
-                    yield text
+        url = f"{b.base_url}/chat/completions"
+        for attempt in (1, 2):
+            async with self._http.stream("POST", url, json=body, headers=headers, timeout=timeout) as r:
+                if r.status_code != 200:
+                    detail = (await r.aread()).decode(errors="replace")[:200]
+                    # Some models cannot run without reasoning; accept their default instead of failing.
+                    if attempt == 1 and r.status_code == 400 and "reasoning" in detail.lower() and "reasoning" in body:
+                        log.warning("%s needs reasoning on; retrying without the reasoning override", b.model)
+                        body = {k: v for k, v in body.items() if k != "reasoning"}
+                        continue
+                    raise LlmError(f"HTTP {r.status_code} {detail}")
+                async for line in r.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        delta = json.loads(data)["choices"][0].get("delta", {})
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+                    if text := delta.get("content"):
+                        yield text
+                return
