@@ -2,7 +2,7 @@
 
 Spec: "Server handoff > QUEEN trial" in `Voice Chess Coach — Spec.md`. Nothing under `server/` is touched or imported by this experiment. **Personal-use trial only.**
 
-**Status: phase 1 done (environment installed, harness proven on fake output). Phase 2 (GPU runs) not started.**
+**Status: both phases done. Result: neither checkpoint loads on the 8 GB RTX 3070 Ti (OOM / startup memory check at every `--gpu-memory-utilization` tried, 0.72 down to 0.50). See Results.**
 
 ## Licence
 
@@ -98,27 +98,36 @@ Per-position timeout defaults: 900 s without progress while loading, 300 s per a
 
 Pass/fail criteria (from the spec): loads and answers within 8 GB; answer time under about 5 s; share of legal moves and share in Stockfish's top 3; spot-check explanations against Stockfish's lines (manual, use the `explanation` and `stockfish_top` fields plus the checker's flags).
 
-## Results
+## Results (phase 2, run 2026-10-18)
 
-Loaded = model loaded and answered all positions. Times are `gen_s` from the persistent worker (median excluding the first answer, which includes CUDA warm-up); load time is separate.
+**Neither checkpoint loads on this 8 GB GPU at any `--gpu-memory-utilization` tried. No position was answered, so there are no legal-move, top-3, timing or explanation numbers.**
 
-| model | util | loaded? | OOM / error text | load s | median answer s | answers < 5 s | legal (of 21) | model's own `best_move` (of 21) | top-3 (of 21) | checker-flagged explanations | notes |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| queen_hce-4 | 0.72 | | | | | | | | | | |
-| queen_hce-4 | 0.70 | | | | | | | | | | |
-| queen_hce-4 | 0.65 | | | | | | | | | | |
-| queen_hce-4 | 0.60 | | | | | | | | | | |
-| queen_hce-4 | 0.50 | | | | | | | | | | |
-| queen_pawn-8 | 0.72 | | | | | | | | | | |
-| queen_pawn-8 | 0.70 | | | | | | | | | | |
-| queen_pawn-8 | 0.65 | | | | | | | | | | |
-| queen_pawn-8 | 0.60 | | | | | | | | | | |
-| queen_pawn-8 | 0.50 | | | | | | | | | | |
+Setup for every run: `voicechess-llm` stopped; desktop using about 2.0-2.2 GiB (`nvidia-smi` just before each run: 2029-2208 MiB used of 8192). torch/vLLM see 7.69 GiB total, 5.42 GiB free at startup. `voicechess-llm` was restarted afterwards (`active`).
+
+| model | util | loaded? | error (from `logs/<model>-<util>.log`) |
+|---|---|---|---|
+| queen_hce-4 | 0.72 | no | vLLM startup check: `ValueError: Free memory on device cuda:0 (5.42/7.69 GiB) on startup is less than desired GPU memory utilization (0.72, 5.53 GiB).` |
+| queen_hce-4 | 0.70 | no | `torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 502.00 MiB. GPU 0 has a total capacity of 7.69 GiB of which 165.81 MiB is free. ... this process has 5.52 GiB memory in use.` (while loading weights; "Failed to load model - not enough GPU memory") |
+| queen_hce-4 | 0.65 | no | same failure while loading weights, `CUDACachingAllocator` OOM (free ~87-102 MB) |
+| queen_hce-4 | 0.60 | no | same |
+| queen_hce-4 | 0.50 | no | `CUDA out of memory. Tried to allocate 44.00 MiB. ... 84.12 MiB is free. ... this process has 5.48 GiB memory in use. Of the allocated memory 5.26 GiB is allocated by PyTorch` |
+| queen_pawn-8 | 0.72 | no | same startup check as hce-4: `Free memory ... (5.42/7.69 GiB) ... less than desired GPU memory utilization (0.72, 5.53 GiB)` |
+| queen_pawn-8 | 0.70 | no | `CUDA out of memory` while loading weights (same pattern) |
+| queen_pawn-8 | 0.65 | no | same |
+| queen_pawn-8 | 0.60 | no | same |
+| queen_pawn-8 | 0.50 | no | `CUDA out of memory. Tried to allocate 502.00 MiB. ... 119.62 MiB is free. ... this process has 5.52 GiB memory in use. Of the allocated memory 5.31 GiB is allocated by PyTorch` |
+
+Notes:
+
+* 0.72 (the card default) is rejected before loading because it asks for 5.53 GiB and only 5.42 GiB is free once the desktop's share is subtracted.
+* Below that the failure is the same at every value: `--gpu-memory-utilization` does not cap how much the weights occupy. vLLM allocates the decoder (about 5.3 GiB already allocated when it dies) and the free 5.4 GiB runs out before the model finishes loading, with the cross-attention layers and the separately loaded Lc0 encoder (about 0.9 GiB) still to come. Lowering the value therefore cannot help.
+* Stopping the desktop session is not an option here, and the card's `infer.py` offers no quantisation or CPU-offload switch, so no workaround was tried.
+* `results-<model>-<util>.json` and `logs/` hold the raw records (local only, git-ignored).
 
 ### Human spot-check of explanations
 
-(fill after a run loads: position id, what the model claimed, what Stockfish says, verdict)
+Not possible: no model produced output.
 
 ### Decision
 
-(fill: pass / fail against the spec criteria)
+**Fail** on the first spec criterion (loads and answers within 8 GB: no). Keep Maia + Stockfish + the hosted LLM (and the local llama.cpp coach fallback). [INFERENCE] QUEEN would need a GPU with roughly 12 GB or more free for the BF16 decoder (5.73 GiB), cross-attention layers, encoder, activations and KV cache; a rented GPU for an hour, as the spec suggests, is the cheap way to judge whether its move quality and explanations are worth building around. The answer-time criterion could not be measured; the memory-bandwidth estimate above says it would be at best 4-8 s on a 3070 Ti anyway.
