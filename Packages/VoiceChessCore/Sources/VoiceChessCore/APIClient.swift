@@ -71,6 +71,18 @@ public struct APIClient: Sendable {
         _ = try await perform("DELETE", "game/\(gameID)", body: nil)
     }
 
+    /// Synthesizes `text` on the server; returns WAV bytes. `voice` nil means the server default.
+    /// `timeout` bounds the wait for the server to respond.
+    public func tts(text: String, voice: String?, speed: Double = 1.0, timeout: TimeInterval = 2.5) async throws -> Data {
+        struct Body: Encodable { let text: String; let voice: String?; let speed: Double }
+        let body = try JSONEncoder().encode(Body(text: text, voice: voice, speed: speed))
+        return try await perform("POST", "tts", body: body, accept: "audio/wav", timeout: timeout)
+    }
+
+    public func ttsVoices() async throws -> TTSVoices {
+        try await request("GET", "tts/voices")
+    }
+
     // MARK: Transport
 
     private func request<T: Decodable>(_ method: String, _ path: String, body: Data? = nil) async throws -> T {
@@ -83,15 +95,18 @@ public struct APIClient: Sendable {
         }
     }
 
-    private func perform(_ method: String, _ path: String, body: Data?) async throws -> Data {
+    private func perform(
+        _ method: String, _ path: String, body: Data?,
+        accept: String = "application/json", timeout: TimeInterval = 30
+    ) async throws -> Data {
         var req = URLRequest(url: baseURL.appendingPathComponent(path))
         req.httpMethod = method
-        req.timeoutInterval = 30
+        req.timeoutInterval = timeout
         if let body {
             req.httpBody = body
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(accept, forHTTPHeaderField: "Accept")
 
         let started = Date()
         func elapsed() -> String { "\(Int(Date().timeIntervalSince(started) * 1000)) ms" }

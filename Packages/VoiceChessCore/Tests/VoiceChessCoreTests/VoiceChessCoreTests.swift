@@ -152,3 +152,184 @@ final class PhraseTests: XCTestCase {
         XCTAssertNil(VoiceCommand.parse("knight to f three"))
     }
 }
+
+final class BoardPositionTests: XCTestCase {
+    private func square(_ name: String) -> Int { BoardPosition.squareIndex(name)! }
+
+    func testStartPosition() throws {
+        let board = try XCTUnwrap(BoardPosition(fen: BoardPosition.startFEN))
+        XCTAssertEqual(board.squares.count, 64)
+        XCTAssertEqual(board.sideToMove, .white)
+        XCTAssertEqual(board.squares.compactMap { $0 }.count, 32)
+        XCTAssertEqual(board.piece(at: square("a1")), Piece(kind: .rook, color: .white))
+        XCTAssertEqual(board.piece(at: square("e1")), Piece(kind: .king, color: .white))
+        XCTAssertEqual(board.piece(at: square("d1")), Piece(kind: .queen, color: .white))
+        XCTAssertEqual(board.piece(at: square("e2")), Piece(kind: .pawn, color: .white))
+        XCTAssertNil(board.piece(at: square("e4")))
+        XCTAssertEqual(board.piece(at: square("b8")), Piece(kind: .knight, color: .black))
+        XCTAssertEqual(board.piece(at: square("c8")), Piece(kind: .bishop, color: .black))
+        XCTAssertEqual(board.piece(at: square("e8")), Piece(kind: .king, color: .black))
+        XCTAssertEqual(board.piece(at: square("h7")), Piece(kind: .pawn, color: .black))
+        XCTAssertNil(board.checkSquare)
+        XCTAssertNil(board.lastMove)
+        XCTAssertEqual(BoardPosition.start, board)
+    }
+
+    func testMidGamePositionWithCheckAndLastMove() throws {
+        // 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 6. Re1 b5 7. Bb3 d6 8. c3 O-O 9. h3 Nb8 10. Qh5 Nbd7 11. Qxf7+
+        let fen = "r1bq1rk1/2pn1Qpp/p2p1n2/1p2p3/4P3/1BP2N1P/PP1P1PP1/RNB1R1K1 b - - 0 11"
+        let board = try XCTUnwrap(BoardPosition(fen: fen, inCheck: false, lastMoveUci: "h5f7"))
+        XCTAssertEqual(board.sideToMove, .black)
+        XCTAssertEqual(board.piece(at: square("f7")), Piece(kind: .queen, color: .white))
+        XCTAssertEqual(board.piece(at: square("g8")), Piece(kind: .king, color: .black))
+        XCTAssertEqual(board.piece(at: square("g1")), Piece(kind: .king, color: .white))
+        XCTAssertNil(board.piece(at: square("h5")))
+        XCTAssertEqual(board.lastMove, LastMove(from: square("h5"), to: square("f7")))
+        XCTAssertNil(board.checkSquare)
+
+        // The in_check flag marks the side to move's king.
+        let checked = try XCTUnwrap(BoardPosition(fen: fen, inCheck: true, lastMoveUci: "h5f7"))
+        XCTAssertEqual(checked.checkSquare, square("g8"))
+        let whiteChecked = try XCTUnwrap(BoardPosition(
+            fen: "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1", inCheck: true))
+        XCTAssertEqual(whiteChecked.checkSquare, square("e1"))
+    }
+
+    func testEnPassantCastlingAndCountersAreIgnoredSafely() throws {
+        let withEP = try XCTUnwrap(BoardPosition(fen: "rnbqkbnr/pppp1ppp/8/4pP2/8/8/PPPPP1PP/RNBQKBNR w KQkq e6 0 3"))
+        XCTAssertEqual(withEP.piece(at: square("e5")), Piece(kind: .pawn, color: .black))
+        XCTAssertEqual(withEP.piece(at: square("f5")), Piece(kind: .pawn, color: .white))
+        XCTAssertEqual(withEP.sideToMove, .white)
+
+        let noRights = try XCTUnwrap(BoardPosition(fen: "4k3/8/8/8/8/8/8/4K2R b - - 12 40"))
+        XCTAssertEqual(noRights.squares.compactMap { $0 }.count, 3)
+
+        // Trailing fields are optional and garbage in them does not matter.
+        let sparse = try XCTUnwrap(BoardPosition(fen: "4k3/8/8/8/8/8/8/4K3 w"))
+        XCTAssertEqual(sparse.sideToMove, .white)
+        XCTAssertNotNil(BoardPosition(fen: "4k3/8/8/8/8/8/8/4K3 w ??? ??? x y z"))
+        XCTAssertNotNil(BoardPosition(fen: "  4k3/8/8/8/8/8/8/4K3   b  "))
+    }
+
+    func testMalformedFENIsNil() {
+        let bad = [
+            "",
+            "garbage",
+            "8/8/8/8/8/8/8 w - - 0 1",
+            "8/8/8/8/8/8/8/8/8 w - - 0 1",
+            "9/8/8/8/8/8/8/8 w - - 0 1",
+            "ppppppppp/8/8/8/8/8/8/8 w - - 0 1",
+            "7/8/8/8/8/8/8/8 w - - 0 1",
+            "4k3/8/8/8/8/8/8/4X3 w - - 0 1",
+            "4k3/8/8/8/8/8/8/4K3",
+            "4k3/8/8/8/8/8/8/4K3 x - - 0 1",
+            "4k3//8/8/8/8/8/4K3 w - - 0 1",
+        ]
+        for fen in bad {
+            XCTAssertNil(BoardPosition(fen: fen), fen)
+        }
+    }
+
+    func testLastMoveParsing() throws {
+        let fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+        XCTAssertEqual(
+            try XCTUnwrap(BoardPosition(fen: fen, lastMoveUci: "e7e8q")).lastMove,
+            LastMove(from: square("e7"), to: square("e8")))
+        XCTAssertEqual(
+            try XCTUnwrap(BoardPosition(fen: fen, lastMoveUci: "e1g1")).lastMove,
+            LastMove(from: square("e1"), to: square("g1")))
+        for uci in ["0000", "", "e2", "z9e4", "e2e9", "e2e4qq"] {
+            XCTAssertNil(BoardPosition(fen: fen, lastMoveUci: uci)?.lastMove, uci)
+        }
+        XCTAssertNil(BoardPosition(fen: fen, lastMoveUci: nil)?.lastMove)
+    }
+
+    func testPositionFromGameState() throws {
+        let state = try JSONDecoder().decode(GameState.self, from: Data(stateJSON.utf8))
+        let board = try XCTUnwrap(BoardPosition(state: state))
+        XCTAssertEqual(board.sideToMove, .black)
+        XCTAssertEqual(board.piece(at: square("e4")), Piece(kind: .pawn, color: .white))
+        XCTAssertEqual(board.lastMove, LastMove(from: square("e2"), to: square("e4")))
+        XCTAssertNil(board.checkSquare)
+    }
+
+    func testSquareIndex() {
+        XCTAssertEqual(BoardPosition.squareIndex("a1"), 0)
+        XCTAssertEqual(BoardPosition.squareIndex("h1"), 7)
+        XCTAssertEqual(BoardPosition.squareIndex("a8"), 56)
+        XCTAssertEqual(BoardPosition.squareIndex("h8"), 63)
+        XCTAssertNil(BoardPosition.squareIndex("i1"))
+        XCTAssertNil(BoardPosition.squareIndex("a9"))
+        XCTAssertNil(BoardPosition.squareIndex("a"))
+    }
+
+    func testRecentMoveList() {
+        XCTAssertEqual(MoveList.recent([]), "")
+        XCTAssertEqual(MoveList.recent(["e4", "e5", "Nf3"]), "1. e4 e5 2. Nf3")
+        let moves = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]
+        XCTAssertEqual(MoveList.recent(moves, plies: 3), "… 2... Nc6 3. Bb5 a6")
+        XCTAssertEqual(MoveList.recent(moves, plies: 4), "… 3. Bb5 a6")
+        XCTAssertEqual(MoveList.recent(moves, plies: 6), "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6")
+    }
+}
+
+final class TTSClientTests: XCTestCase {
+    private func makeClient() -> APIClient {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        return APIClient(baseURL: URL(string: "http://example.test")!, session: URLSession(configuration: config))
+    }
+
+    private func bodyData(_ request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+
+    func testTTSRequestAndResponse() async throws {
+        var seen: URLRequest?
+        let wav = Data([0x52, 0x49, 0x46, 0x46, 1, 2, 3])
+        StubProtocol.handler = { request in
+            seen = request
+            return (200, wav)
+        }
+        let data = try await makeClient().tts(text: "Knight to f3", voice: "af_heart")
+        XCTAssertEqual(data, wav)
+        XCTAssertEqual(seen?.httpMethod, "POST")
+        XCTAssertEqual(seen?.url?.path, "/tts")
+        XCTAssertEqual(seen?.timeoutInterval, 2.5)
+        XCTAssertEqual(seen?.value(forHTTPHeaderField: "Accept"), "audio/wav")
+        let body = try XCTUnwrap(seen.flatMap(bodyData))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(object["text"] as? String, "Knight to f3")
+        XCTAssertEqual(object["voice"] as? String, "af_heart")
+        XCTAssertEqual(object["speed"] as? Double, 1.0)
+
+        _ = try await makeClient().tts(text: "Hi", voice: nil)
+        let bare = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(seen.flatMap(bodyData))) as? [String: Any])
+        XCTAssertNil(bare["voice"])
+    }
+
+    func testTTSUnavailableAndVoices() async throws {
+        StubProtocol.handler = { _ in (503, Data(#"{"detail":"TTS model not installed"}"#.utf8)) }
+        do {
+            _ = try await makeClient().tts(text: "Hi", voice: nil)
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error as? APIError, .server(status: 503, detail: "TTS model not installed"))
+        }
+
+        StubProtocol.handler = { _ in (200, Data(#"{"voices":["af_heart","bf_emma"],"default":"af_heart"}"#.utf8)) }
+        let voices = try await makeClient().ttsVoices()
+        XCTAssertEqual(voices, TTSVoices(voices: ["af_heart", "bf_emma"], defaultVoice: "af_heart"))
+    }
+}

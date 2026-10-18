@@ -137,3 +137,14 @@ public struct BoardRead: Codable, Equatable, Sendable {
     /// color -> sentence listing that side's pieces
     public let spoken: [String: String]
 }
+
+/// Response of `GET /tts/voices`.
+public struct TTSVoices: Codable, Equatable, Sendable {
+    public let voices: [String]
+    public let defaultVoice: String
+
+    enum CodingKeys: String, CodingKey {
+        case voices
+        case defaultVoice = "default"
+    }
+}

@@ -10,7 +10,11 @@ final class AppSettings: ObservableObject {
     private enum Key {
         static let serverURL = "serverURL"
         static let confirmBeforePlay = "confirmBeforePlay"
-        static let handsFree = "handsFree"
+        static let legacyHandsFree = "handsFree"
+        static let autoListen = "autoListen"
+        static let serverVoiceEnabled = "serverVoiceEnabled"
+        static let serverVoice = "serverVoice"
+        static let localVoiceID = "localVoiceID"
         static let keepAwake = "keepAwake"
         static let side = "side"
         static let maiaLevel = "maiaLevel"
@@ -22,8 +26,21 @@ final class AppSettings: ObservableObject {
     @Published var confirmBeforePlay: Bool {
         didSet { UserDefaults.standard.set(confirmBeforePlay, forKey: Key.confirmBeforePlay) }
     }
-    @Published var handsFree: Bool {
-        didSet { UserDefaults.standard.set(handsFree, forKey: Key.handsFree) }
+    /// Listen again automatically after every move until the game ends or the user pauses.
+    @Published var autoListen: Bool {
+        didSet { UserDefaults.standard.set(autoListen, forKey: Key.autoListen) }
+    }
+    /// Speak through the server's /tts endpoint, falling back to the on-device voice.
+    @Published var serverVoiceEnabled: Bool {
+        didSet { UserDefaults.standard.set(serverVoiceEnabled, forKey: Key.serverVoiceEnabled) }
+    }
+    /// Server voice name; empty means the server's default.
+    @Published var serverVoice: String {
+        didSet { UserDefaults.standard.set(serverVoice, forKey: Key.serverVoice) }
+    }
+    /// AVSpeechSynthesisVoice identifier for the offline fallback; empty means the best installed.
+    @Published var localVoiceID: String {
+        didSet { UserDefaults.standard.set(localVoiceID, forKey: Key.localVoiceID) }
     }
     @Published var keepAwake: Bool {
         didSet {
@@ -42,7 +59,12 @@ final class AppSettings: ObservableObject {
         let defaults = UserDefaults.standard
         serverURL = defaults.string(forKey: Key.serverURL) ?? Self.defaultServerURL
         confirmBeforePlay = defaults.object(forKey: Key.confirmBeforePlay) as? Bool ?? false
-        handsFree = defaults.object(forKey: Key.handsFree) as? Bool ?? false
+        // The old hands-free toggle is replaced by auto-listen, which starts ON for everyone.
+        defaults.removeObject(forKey: Key.legacyHandsFree)
+        autoListen = defaults.object(forKey: Key.autoListen) as? Bool ?? true
+        serverVoiceEnabled = defaults.object(forKey: Key.serverVoiceEnabled) as? Bool ?? true
+        serverVoice = defaults.string(forKey: Key.serverVoice) ?? ""
+        localVoiceID = defaults.string(forKey: Key.localVoiceID) ?? ""
         keepAwake = defaults.object(forKey: Key.keepAwake) as? Bool ?? true
         side = SidePreference(rawValue: defaults.string(forKey: Key.side) ?? "") ?? .random
         let level = defaults.integer(forKey: Key.maiaLevel)
@@ -57,6 +79,12 @@ final class AppSettings: ObservableObject {
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               url.host != nil else { return nil }
         return url
+    }
+
+    /// An API client for the configured server; HTTP calls are logged to `log`.
+    func makeAPI(log: DebugLog) throws -> APIClient {
+        guard let url = baseURL else { throw APIError.unreachable("invalid server URL") }
+        return APIClient(baseURL: url, log: { line in Task { @MainActor in log.log(line) } })
     }
 }
 

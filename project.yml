@@ -36,6 +36,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.louissentinella.voicechess
         PRODUCT_NAME: VoiceChess
-        MARKETING_VERSION: "0.2"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "0.3"
+        CURRENT_PROJECT_VERSION: "3"
         TARGETED_DEVICE_FAMILY: "1"

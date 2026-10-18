@@ -27,22 +27,35 @@ final class GameController: ObservableObject {
     @Published private(set) var transcript = ""
     @Published private(set) var playerLine = ""
     @Published private(set) var botLine = ""
-    @Published private(set) var spokenLine = ""
     @Published private(set) var errorMessage: String?
     @Published private(set) var game: GameState?
+    /// Auto-listen is paused by the user or by a hard error; cleared by Listen or a new game.
+    @Published private(set) var paused = false
+    /// A listening/speaking flow is in progress.
+    @Published private(set) var flowActive = false
 
     private let audio: AudioSessionController
     private let speaker: Speaker
     private let listener: SpeechListener
     private var flow: Task<Void, Never>?
+    /// Incremented whenever a flow starts or is cancelled; a flow that finds it changed is stale.
+    private var flowID = 0
     private var hintsTask: Task<Void, Never>?
     private var hints: [String] = []
     private var lastSpoken = ""
     private var prepared = false
+    /// Consecutive listens that heard nothing; the "did not hear" line is spoken only for the first.
+    private var silentCycles = 0
+    /// Reply the user has not heard yet (the flow was stopped after the move was applied).
+    private var pendingAnnouncement: String?
+    private var appActive = true
+    private var interrupted = false
+    /// Auto-listen was running when the system stopped it; resume when the app is active and uninterrupted.
+    private var resumeWanted = false
 
     init() {
         audio = AudioSessionController(log: log)
-        speaker = Speaker(log: log)
+        speaker = Speaker(settings: settings, log: log)
         listener = SpeechListener(log: log)
         listener.onPartial = { [weak self] text in self?.transcript = text }
         audio.onInterruptionBegan = { [weak self] in self?.interruptionBegan() }
@@ -55,7 +68,7 @@ final class GameController: ObservableObject {
     func prepare() async {
         guard !prepared else { return }
         prepared = true
-        log.log("App started \(AppInfo.version), server \(settings.serverURL)")
+        log.log("App started \(AppInfo.version), server \(settings.serverURL), auto-listen \(settings.autoListen), server voice \(settings.serverVoiceEnabled)")
         log.log("On-device recognition supported: \(listener.supportsOnDeviceRecognition)")
         let center = NotificationCenter.default
         center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main) { [weak self] _ in
@@ -81,66 +94,156 @@ final class GameController: ObservableObject {
         @unknown default: name = "unknown"
         }
         log.log("scenePhase -> \(name) (status \(status.rawValue), engine running \(listener.isEngineRunning), listening \(listener.isListening), speaking \(speaker.isSpeaking))")
+        appActive = phase == .active
+        switch phase {
+        case .background: stopForSystem("app moved to background")
+        case .active: resumeIfWanted("app became active")
+        default: break
+        }
     }
 
     private func interruptionBegan() {
+        interrupted = true
+        stopForSystem("audio interruption began")
+    }
+
+    private func interruptionEnded(shouldResume: Bool) {
+        interrupted = false
+        log.log("Audio interruption over (system shouldResume: \(shouldResume))")
+        resumeIfWanted("audio interruption ended")
+    }
+
+    /// Stops all speech and listening because the system took the audio or the screen away.
+    /// Auto-listen resumes by itself later only if it was running.
+    private func stopForSystem(_ reason: String) {
+        if flowActive, settings.autoListen, !paused { resumeWanted = true }
+        log.log("Stopping: \(reason) (status \(status.rawValue), resume later: \(resumeWanted))")
         cancelFlow()
         status = .idle
     }
 
-    private func interruptionEnded(shouldResume: Bool) {
-        guard shouldResume, settings.handsFree, game?.gameOver == false, status == .idle else { return }
-        log.log("Hands-free: resuming listening after interruption")
+    private func resumeIfWanted(_ reason: String) {
+        guard resumeWanted else { return }
+        guard appActive, !interrupted else {
+            log.log("Resume deferred after \(reason): app active \(appActive), interrupted \(interrupted)")
+            return
+        }
+        resumeWanted = false
+        guard settings.autoListen, !paused, game?.gameOver != true else {
+            log.log("Not resuming after \(reason): auto-listen \(settings.autoListen), paused \(paused), game over \(game?.gameOver == true)")
+            return
+        }
+        log.log("Auto-listen resuming after \(reason)")
         startFlow { [self] in try await conversation() }
     }
 
     // MARK: Actions
 
-    /// The big button: ends the current utterance when listening, otherwise starts one.
-    func pushToTalk() {
-        switch status {
-        case .thinking: return
-        case .listening: listener.stopListening()
-        case .idle, .speaking: startFlow { [self] in try await conversation() }
+    /// True while auto-listen is on and actively running (the button then reads Pause).
+    var autoListening: Bool { settings.autoListen && !paused && flowActive }
+
+    /// True when auto-listen is on but stopped by the user or by an error.
+    var autoListenPaused: Bool { settings.autoListen && paused }
+
+    /// The big button: Pause while auto-listen runs; otherwise Listen (push-to-talk), or Done while listening.
+    func primaryAction() {
+        if autoListening {
+            pause("user tapped Pause")
+            return
         }
+        switch status {
+        case .thinking:
+            return
+        case .listening:
+            log.log("Done tapped: ending utterance")
+            listener.stopListening()
+        case .idle, .speaking:
+            paused = false
+            resumeWanted = false
+            log.log("Listen tapped (auto-listen \(settings.autoListen ? "on" : "off"), status \(status.rawValue))")
+            startFlow { [self] in try await conversation() }
+        }
+    }
+
+    private func pause(_ reason: String) {
+        paused = true
+        resumeWanted = false
+        log.log("Auto-listen paused: \(reason)")
+        cancelFlow()
+        status = .idle
     }
 
     func newGame() {
+        paused = false
+        resumeWanted = false
+        log.log("New game requested")
         startFlow { [self] in
             guard try await guarded({ try await beginNewGame() }) else { return }
-            if settings.handsFree, game?.gameOver == false { try await conversation() }
+            if shouldRelisten { try await conversation() }
         }
     }
 
+    /// Speaks a sample move so the voice settings can be judged. Auto-listen picks up again afterwards.
+    func testVoice() {
+        let resume = autoListening && shouldRelisten
+        log.log("Test voice")
+        startFlow { [self] in
+            try await speak("Knight to f3, check")
+            if resume { try await conversation() }
+        }
+    }
+
+    /// Whether to listen again after the current turn.
+    private var shouldRelisten: Bool { settings.autoListen && !paused && game?.gameOver != true }
+
     private func startFlow(_ body: @escaping @MainActor () async throws -> Void) {
         cancelFlow()
+        flowID += 1
+        let id = flowID
+        flowActive = true
         flow = Task { [weak self] in
+            var failure: Error?
             do {
+                try Task.checkCancellation()
                 try await body()
             } catch is CancellationError {
                 return
             } catch {
-                self?.log.log("Flow error: \(error.localizedDescription)")
-                self?.errorMessage = error.localizedDescription
+                failure = error
             }
-            guard !Task.isCancelled else { return }
-            self?.status = .idle
+            guard let self, self.flowID == id else { return }
+            if let failure {
+                self.log.log("Flow error: \(failure.localizedDescription)")
+                self.errorMessage = failure.localizedDescription
+                self.paused = true
+            }
+            self.status = .idle
+            self.flowActive = false
+            self.flow = nil
         }
     }
 
     private func cancelFlow() {
+        flowID += 1
         flow?.cancel()
         flow = nil
+        flowActive = false
         speaker.stop()
         listener.cancel()
     }
 
     // MARK: Conversation
 
+    /// Listens and responds once; with auto-listen on, keeps going until the game ends,
+    /// the user pauses, or a hard error occurs.
     private func conversation() async throws {
         errorMessage = nil
+        try await speakPending()
         while true {
-            guard try await turn(), settings.handsFree, game?.gameOver == false else { return }
+            guard try await turn(), shouldRelisten else {
+                log.log("Conversation ends (auto-listen \(settings.autoListen), paused \(paused), game over \(game?.gameOver == true))")
+                return
+            }
         }
     }
 
@@ -150,12 +253,25 @@ final class GameController: ObservableObject {
         case .failed:
             return false
         case .nothing:
-            if !settings.handsFree { try await speak("I did not hear anything.") }
+            silentCycles += 1
+            // Push-to-talk always answers; auto-listen says it once, then keeps listening silently.
+            if !settings.autoListen || silentCycles == 1 { try await speak("I did not hear anything.") }
             return true
         case let .text(text):
+            silentCycles = 0
             _ = try await guarded { try await handle(text) }
             return true
         }
+    }
+
+    /// A listen that cannot proceed: shows the problem and pauses auto-listen until the user taps Listen.
+    private func hardFailure(_ message: String) -> Heard {
+        errorMessage = message
+        if settings.autoListen, !paused {
+            paused = true
+            log.log("Auto-listen paused: \(message)")
+        }
+        return .failed
     }
 
     private func hear(contextual: [String]? = nil) async throws -> Heard {
@@ -163,21 +279,19 @@ final class GameController: ObservableObject {
         try Task.checkCancellation()
         guard !speaker.isSpeaking else {
             log.log("Refusing to listen while speaking")
-            return .failed
+            return hardFailure("Tried to listen while speaking.")
         }
         errorMessage = nil
         if let problem = await listener.requestPermissions() {
-            errorMessage = problem
             log.log("Cannot listen: \(problem)")
-            return .failed
+            return hardFailure(problem)
         }
         try Task.checkCancellation()
         do {
             try audio.activate()
         } catch {
-            errorMessage = "Audio session failed: \(error.localizedDescription)"
             log.log("Audio session activation failed: \(error.localizedDescription)")
-            return .failed
+            return hardFailure("Audio session failed: \(error.localizedDescription)")
         }
         listener.contextualStrings = contextual ?? hints
         transcript = ""
@@ -194,11 +308,9 @@ final class GameController: ObservableObject {
         case .noSpeech:
             return .nothing
         case let .failed(message):
-            errorMessage = message
-            return .failed
+            return hardFailure(message)
         case .interrupted:
-            errorMessage = "Audio route changed; tap to try again."
-            return .failed
+            return hardFailure("Audio route changed; tap Listen to try again.")
         case .cancelled:
             throw CancellationError()
         }
@@ -220,17 +332,21 @@ final class GameController: ObservableObject {
         }
         status = .thinking
         let response = try await makeAPI().say(gameID: game.id, transcript: text, confirm: settings.confirmBeforePlay)
+        // The server has already played the move: keep the board in sync even if the flow was stopped.
+        if case let .played(result) = response { applyMove(result) }
         try Task.checkCancellation()
         switch response {
-        case let .played(result):
-            try await finishMove(result)
+        case .played:
+            try await speakPending()
         case let .confirm(candidate, message):
             try await confirm(candidate: candidate, message: message, gameID: game.id)
         case let .ambiguous(message, candidates):
             try await speak(message)
             switch try await hear(contextual: hints + candidates.map(\.spoken)) {
             case let .text(answer): try await handle(answer)
-            case .nothing: try await speak("I did not hear an answer.")
+            case .nothing:
+                silentCycles += 1
+                try await speak("I did not hear an answer.")
             case .failed: break
             }
         case let .noMatch(message):
@@ -247,8 +363,9 @@ final class GameController: ObservableObject {
                 case .yes?:
                     status = .thinking
                     let result = try await makeAPI().move(gameID: gameID, move: candidate.san)
+                    applyMove(result)
                     try Task.checkCancellation()
-                    try await finishMove(result)
+                    try await speakPending()
                     return
                 case .no?:
                     try await speak("Cancelled")
@@ -299,24 +416,28 @@ final class GameController: ObservableObject {
         status = .thinking
         let api = try makeAPI()
         let created = try await api.newGame(side: settings.side, opponent: "maia", level: settings.maiaLevel)
-        try Task.checkCancellation()
         let previous = game?.id
         game = created.state
         transcript = ""
         playerLine = ""
         botLine = created.botMove?.spoken ?? ""
+        silentCycles = 0
         refreshHints()
+        var text = "You are \(created.state.player)."
+        if let bot = created.botMove { text += " I play \(bot.spoken)." }
+        pendingAnnouncement = text
         if let previous {
             Task { [log] in
                 do { try await api.deleteGame(gameID: previous) } catch { log.log("Deleting old game failed: \(error.localizedDescription)") }
             }
         }
-        var text = "You are \(created.state.player)."
-        if let bot = created.botMove { text += " I play \(bot.spoken)." }
-        try await speak(text, remember: true)
+        try Task.checkCancellation()
+        try await speakPending()
     }
 
-    private func finishMove(_ result: MoveResult) async throws {
+    /// Updates the board and the reply to speak. Runs before any cancellation check so the screen
+    /// always matches the server, and a reply cut off by a pause is spoken when listening resumes.
+    private func applyMove(_ result: MoveResult) {
         game = result.state
         playerLine = result.playerMove.spoken
         botLine = result.botMove?.spoken ?? ""
@@ -324,7 +445,13 @@ final class GameController: ObservableObject {
         var parts: [String] = []
         if let bot = result.botMove { parts.append(bot.spoken) }
         if let over = result.state.spokenResult { parts.append(over) }
-        if !parts.isEmpty { try await speak(parts.joined(separator: ". "), remember: true) }
+        pendingAnnouncement = parts.isEmpty ? nil : parts.joined(separator: ". ")
+    }
+
+    private func speakPending() async throws {
+        guard let text = pendingAnnouncement else { return }
+        try await speak(text, remember: true)
+        pendingAnnouncement = nil
     }
 
     /// Fetches the legal-move phrases for the current position; `hear` waits for it.
@@ -354,7 +481,6 @@ final class GameController: ObservableObject {
             log.log("Audio session activation failed before speaking: \(error.localizedDescription)")
         }
         if remember { lastSpoken = text }
-        spokenLine = text
         status = .speaking
         log.log("Speak: \(text)")
         await speaker.say(text)
@@ -379,8 +505,6 @@ final class GameController: ObservableObject {
     }
 
     private func makeAPI() throws -> APIClient {
-        guard let url = settings.baseURL else { throw APIError.unreachable("invalid server URL") }
-        let log = self.log
-        return APIClient(baseURL: url, log: { line in Task { @MainActor in log.log(line) } })
+        try settings.makeAPI(log: log)
     }
 }
