@@ -228,6 +228,7 @@ public struct APIClient: Sendable {
             }
             #endif
             guard finished else { throw APIError.invalidResponse("stream ended before done") }
+            log?("POST /\(path) finished: \(sentences) sentences in \(elapsed())")
         } catch {
             if error is CancellationError || Task.isCancelled {
                 log?("POST /\(path) cancelled after \(elapsed()) (\(sentences) sentences)")
@@ -237,6 +238,5 @@ public struct APIClient: Sendable {
             if let apiError = error as? APIError { throw apiError }
             throw APIError.unreachable(error.localizedDescription)
         }
-        log?("POST /\(path) finished: \(sentences) sentences in \(elapsed())")
     }
 }
