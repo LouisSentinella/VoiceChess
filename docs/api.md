@@ -34,6 +34,7 @@ Base URL default: `https://louis-desktop.tail4f111a.ts.net` (tailnet only). JSON
 | `GET /game/{id}/board/read` | | `{"player":"white","pieces":{"white":{"king":["e1"],...},"black":{...}},"spoken":{"white":"king e1, queen d1, ...","black":"..."}}` |
 | `POST /tts` | `{"text":"Knight to f3","voice":"af_heart","speed":1.0}` (voice, speed optional) | 200 `audio/wav` (24 kHz mono 16-bit PCM). 422 bad text/voice/speed; 503 when TTS is unavailable, so the app falls back to the on-device voice. Text is at most 300 characters. |
 | `GET /tts/voices` | | `{"voices":["af_heart","bf_emma",...],"default":"af_heart"}`; 503 when unavailable |
+| `POST /game/{id}/ask` | `{"question":"what is attacking e5"}` | 200 `application/x-ndjson` stream, see below. Allowed at any time, including after the game ends (post-game review). |
 | `DELETE /game/{id}` | | 204 |
 
 ## `/say` outcomes
@@ -45,8 +46,24 @@ The server resolves the transcript to exactly one legal move, or says why not. T
 {"status":"confirm","candidate":{"san":"Nf3","spoken":"Knight to f3"},"message":"Play knight to f3?"}
 {"status":"ambiguous","message":"Did you mean knight to d2 or knight to f3?","candidates":[{"san":"Nbd2","spoken":"Knight b to d2"},{"san":"Nfd2","spoken":"Knight f to d2"}]}
 {"status":"no_match","message":"I did not catch a legal move."}
+{"status":"question","question":"why was that a mistake"}
 ```
 
 - `confirm` is returned when the request had `"confirm":true` and exactly one move matched, **and also without that flag when the match needed a fix-up** (a letter that sounds like another, or an unprefixed square only a piece can reach, such as "f three" meaning the knight). Nothing is played. The app asks `message`, listens for yes or no itself, and on yes sends `POST /move` with the candidate `san`.
 - After `ambiguous` the server remembers the candidates for that game. The next `/say` is matched against them first, so short answers like "f three" or "the knight from b" resolve. A played move or an unrelated transcript clears them.
 - `played` with `state.game_over` true ends the game; speak `state.spoken_result` after the bot move.
+- `question` means the transcript was a question, not a move (it starts with what/why/how/where/which/should/can/is/tell me/explain/analyse/...). Nothing is played. The app sends the `question` text to `POST /ask` and speaks the answer.
+
+## `/ask` stream
+
+One JSON object per line, flushed as soon as available:
+
+```
+{"type":"sentence","text":"Your knight on f3 is attacked by the pawn on e4."}
+{"type":"sentence","text":"Move it or defend it."}
+{"type":"done"}
+```
+
+- Speak each `sentence` as it arrives (each is plain text, at most about 220 characters, no markdown). Synthesise sentence n+1 while sentence n plays so there is no gap.
+- Simple board questions ("what is on e4", "where is my knight", "what is attacking e5", "last five moves") are answered from the position directly in one sentence, instantly. Everything else goes to the language model with Stockfish facts attached, so the first sentence takes about 1 to 3 seconds.
+- `{"type":"error","message":"..."}` may replace `done`: speak `message` (it is user-readable, e.g. "I can't reach the language model right now.") and stop. The HTTP status is still 200; 404 only for an unknown game.
