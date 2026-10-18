@@ -32,6 +32,8 @@ Base URL default: `https://louis-desktop.tail4f111a.ts.net` (tailnet only). JSON
 | `GET /game/{id}/state` | | `State` |
 | `GET /game/{id}/hints` | | `{"phrases":["knight to f three","pawn to e four","castle kingside", ...]}`: spoken forms of every legal move, for speech-recognition contextual strings |
 | `GET /game/{id}/board/read` | | `{"player":"white","pieces":{"white":{"king":["e1"],...},"black":{...}},"spoken":{"white":"king e1, queen d1, ...","black":"..."}}` |
+| `POST /tts` | `{"text":"Knight to f3","voice":"af_heart","speed":1.0}` (voice, speed optional) | 200 `audio/wav` (24 kHz mono 16-bit PCM). 422 bad text/voice/speed; 503 when TTS is unavailable, so the app falls back to the on-device voice. Text is at most 300 characters. |
+| `GET /tts/voices` | | `{"voices":["af_heart","bf_emma",...],"default":"af_heart"}`; 503 when unavailable |
 | `DELETE /game/{id}` | | 204 |
 
 ## `/say` outcomes

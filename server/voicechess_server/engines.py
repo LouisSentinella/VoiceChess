@@ -37,6 +37,14 @@ class EngineConfig:
     def stockfish(self) -> Path:
         return self.engine_dir / "bin" / "stockfish"
 
+    @property
+    def tts_model(self) -> Path:
+        return self.engine_dir / "tts" / "kokoro-v1.0.onnx"
+
+    @property
+    def tts_voices(self) -> Path:
+        return self.engine_dir / "tts" / "voices-v1.0.bin"
+
     def maia_weights(self, level: int) -> Path:
         return self.engine_dir / "weights" / f"maia-{level}.pb.gz"
 

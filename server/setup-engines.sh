@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs Stockfish, lc0 (CPU, Eigen backend) and Maia weights into ./engines.
+# Installs Stockfish, lc0 (CPU, Eigen backend), Maia weights and Kokoro TTS into ./engines.
 # Everything stays inside this directory; no root needed.
 # Needs: gh (logged in), git, gcc/g++, ninja, uv.
 set -euo pipefail
@@ -25,6 +25,12 @@ fi
 for level in 1100 1200 1300 1400 1500 1600 1700 1800 1900; do
   [ -f "weights/maia-$level.pb.gz" ] || \
     gh release download "$MAIA_TAG" -R CSSLab/maia-chess -p "maia-$level.pb.gz" -D weights
+done
+
+# Kokoro TTS (CPU ONNX, int8 not used: fp32 sounds best and is fast enough).
+mkdir -p tts
+for f in kokoro-v1.0.onnx voices-v1.0.bin; do
+  [ -f "tts/$f" ] || gh release download model-files-v1.0 -R thewh1teagle/kokoro-onnx -p "$f" -D tts
 done
 
 if [ ! -x bin/lc0 ]; then

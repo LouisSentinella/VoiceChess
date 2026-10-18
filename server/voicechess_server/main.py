@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 from contextlib import asynccontextmanager
 from typing import Literal
 
 import chess
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from . import spoken
 from .engines import EngineConfig, EngineError, EnginePool
 from .game import Game, MoveError, OpponentSpec
+from .tts import MAX_TEXT, Tts, TtsError
 
 
 class NewGame(BaseModel):
@@ -25,6 +27,12 @@ class NewGame(BaseModel):
 
 class MoveRequest(BaseModel):
     move: str  # SAN ("Nf3", "O-O") or UCI ("g1f3")
+
+
+class TtsRequest(BaseModel):
+    text: str
+    voice: str | None = None
+    speed: float = 1.0
 
 
 class SayRequest(BaseModel):
@@ -57,9 +65,15 @@ class Games:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.pool = EnginePool(EngineConfig.from_env())
+    config = EngineConfig.from_env()
+    app.state.pool = EnginePool(config)
     app.state.games = Games()
+    app.state.tts = Tts(
+        config.tts_model, config.tts_voices, os.environ.get("VOICECHESS_TTS_VOICE", "af_heart")
+    )
+    warm = asyncio.create_task(app.state.tts.warm())  # first phrase should not pay the model load
     yield
+    warm.cancel()
     await app.state.pool.close()
 
 
@@ -180,3 +194,29 @@ async def read_board(game_id: str):
 @app.delete("/game/{game_id}", status_code=204)
 async def end_game(game_id: str):
     app.state.games.remove(game_id)
+
+
+@app.get("/tts/voices")
+async def tts_voices():
+    tts: Tts = app.state.tts
+    try:
+        return {"voices": await tts.voices(), "default": tts.default_voice}
+    except TtsError as e:
+        raise HTTPException(503, str(e)) from None
+
+
+@app.post("/tts")
+async def tts_speak(req: TtsRequest):
+    """Synthesise a short phrase to 24 kHz mono WAV."""
+    text = req.text.strip()
+    if not text or len(text) > MAX_TEXT:
+        raise HTTPException(422, f"Text must be 1-{MAX_TEXT} characters.")
+    if not 0.5 <= req.speed <= 2.0:
+        raise HTTPException(422, "Speed must be between 0.5 and 2.0.")
+    try:
+        wav = await app.state.tts.synthesize(text, req.voice, req.speed)
+    except TtsError as e:
+        raise HTTPException(503, str(e)) from None
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    return Response(wav, media_type="audio/wav")
