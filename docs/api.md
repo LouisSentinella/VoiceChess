@@ -35,6 +35,9 @@ Base URL default: `https://louis-desktop.tail4f111a.ts.net` (tailnet only). JSON
 | `POST /tts` | `{"text":"Knight to f3","voice":"af_heart","speed":1.0}` (voice, speed optional) | 200 `audio/wav` (24 kHz mono 16-bit PCM). 422 bad text/voice/speed; 503 when TTS is unavailable, so the app falls back to the on-device voice. Text is at most 300 characters. |
 | `GET /tts/voices` | | `{"voices":["af_heart","bf_emma",...],"default":"af_heart"}`; 503 when unavailable |
 | `POST /game/{id}/ask` | `{"question":"what is attacking e5"}` | 200 `application/x-ndjson` stream, see below. Allowed at any time, including after the game ends (post-game review). |
+| `GET /game/{id}/review` | | post-game review: see below |
+| `POST /game/{id}/review/{ply}/explain` | | `application/x-ndjson` stream, same events as `/ask` |
+| `GET /log/summary` | | mistake-log summary: see below |
 | `DELETE /game/{id}` | | 204 |
 
 ## `/say` outcomes
@@ -67,3 +70,31 @@ One JSON object per line, flushed as soon as available:
 - Speak each `sentence` as it arrives (each is plain text, at most about 220 characters, no markdown). Synthesise sentence n+1 while sentence n plays so there is no gap.
 - Simple board questions ("what is on e4", "where is my knight", "what is attacking e5", "last five moves") are answered from the position directly in one sentence, instantly. Everything else goes to the language model with Stockfish facts attached, so the first sentence takes about 1 to 3 seconds.
 - `{"type":"error","message":"..."}` may replace `done`: speak `message` (it is user-readable, e.g. "I can't reach the language model right now.") and stop. The HTTP status is still 200; 404 only for an unknown game.
+
+## Review (milestone 6)
+
+`GET /game/{id}/review` (allowed at any time; most useful after the game):
+
+```json
+{"summary":"You played 18 moves: 1 blunder and 1 mistake. Let's go through them.",
+ "moments":[
+  {"ply":6,"move_number":3,"san":"Qxf7+","spoken":"Queen takes f7, check","best_san":"Bc4",
+   "best_spoken":"Bishop to c4","loss_pawns":9.4,"label":"a blunder",
+   "fen_before":"...","fen_after":"...","uci":"h5f7"}
+ ]}
+```
+
+- Moments are the listener's own moves that lost 1.0 pawn or more by the engine's reckoning, worst first, at most 5; if none, `moments` is empty and `summary` says so. `ply` is 1-based (ply 1 = White's first move). `fen_before` is the position the move was played from, `fen_after` the position after it; the app shows `fen_before` with `uci` highlighted while reviewing.
+- `POST /game/{id}/review/{ply}/explain` streams a spoken explanation of that move in the same NDJSON format as `/ask` (sentences, then `done` or `error`). 404 for an unknown game or a ply that is not one of the game's moves.
+
+## Mistake log
+
+The server records, per listener, when they lose track of the board: a spoken move that clearly names a piece and destination but is not legal (`illegal_attempt`) and every "where is / what is on / what is attacking" question (`lookup`). Nothing for the app to send; it is automatic. `GET /log/summary`:
+
+```json
+{"illegal_attempts":3,"lookups":9,"by_piece":{"knight":4,"bishop":2},"by_square":{"e5":3},
+ "spoken":"You asked about the board 9 times and tried 3 illegal moves, mostly with the knight.",
+ "recent":[{"time":"2026-10-18T19:10:00Z","kind":"lookup","detail":"where is knight","game":"abc"}]}
+```
+
+The question "what are my common mistakes" (and similar) is answered from this summary by the normal `/ask` path.
