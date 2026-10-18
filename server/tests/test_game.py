@@ -135,3 +135,49 @@ def test_engine_failure_rolls_back_the_players_move(client):
 def test_bad_opponent_is_rejected_at_creation(client):
     r = client.post("/game", json={"level": 9999})
     assert r.status_code == 422
+
+
+def _new(client, **body) -> str:
+    return client.post("/game", json=body).json()["state"]["id"]
+
+
+def test_say_plays_a_clear_move_and_announces_the_reply(client):
+    gid = _new(client)
+    r = client.post(f"/game/{gid}/say", json={"transcript": "pawn to echo four"}).json()
+    assert r["status"] == "played"
+    assert r["player_move"]["spoken"] == "Pawn to e4"
+    assert r["bot_move"]["spoken"]  # something to speak back
+    assert r["state"]["moves"][0] == "e4"
+
+
+def test_say_confirm_flag_resolves_without_playing(client):
+    gid = _new(client)
+    r = client.post(f"/game/{gid}/say", json={"transcript": "knight f three", "confirm": True}).json()
+    assert r["status"] == "confirm"
+    assert r["candidate"] == {"san": "Nf3", "spoken": "Knight to f3"}
+    assert r["message"] == "Play knight to f3?"
+    assert client.get(f"/game/{gid}/state").json()["moves"] == []
+
+
+def test_say_ambiguous_is_remembered_for_the_next_answer(client):
+    gid = _new(client)
+    # Get both knights able to reach d2: clear the d2 pawn first.
+    client.post(f"/game/{gid}/move", json={"move": "d4"})
+    client.post(f"/game/{gid}/move", json={"move": "Nf3"})
+    r = client.post(f"/game/{gid}/say", json={"transcript": "knight to d two"}).json()
+    assert r["status"] == "ambiguous"
+    assert [c["san"] for c in r["candidates"]] == ["Nbd2", "Nfd2"]
+    r = client.post(f"/game/{gid}/say", json={"transcript": "f three"}).json()
+    assert r["status"] == "played" and r["player_move"]["san"] == "Nfd2"
+
+
+def test_say_miss_is_a_200_outcome_not_an_error(client):
+    gid = _new(client)
+    r = client.post(f"/game/{gid}/say", json={"transcript": "uh what"})
+    assert r.status_code == 200 and r.json()["status"] == "no_match"
+
+
+def test_hints_cover_the_legal_moves(client):
+    gid = _new(client)
+    phrases = client.get(f"/game/{gid}/hints").json()["phrases"]
+    assert "knight to f three" in phrases and "e four" in phrases

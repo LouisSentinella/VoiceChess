@@ -9,6 +9,8 @@ from typing import Literal
 
 import chess
 
+from . import spoken
+
 UCI_RE = re.compile(r"^[a-h][1-8][a-h][1-8][qrbn]?$")
 SQUARE_RE = re.compile(r"[a-h][1-8]")
 
@@ -56,6 +58,9 @@ class Game:
     player: chess.Color
     opponent: OpponentSpec
     board: chess.Board = field(default_factory=chess.Board)
+    # Moves offered by the last "did you mean" question; the next transcript is
+    # matched against these first.
+    pending: list[chess.Move] = field(default_factory=list)
 
     @staticmethod
     def new_id() -> str:
@@ -123,6 +128,18 @@ class Game:
             and self.board.piece_type_at(m.from_square) == piece
         ]
 
+    def play(self, move: chess.Move) -> None:
+        self.board.push(move)
+        self.pending = []
+
+    def resolve_speech(self, transcript: str) -> spoken.Resolution:
+        resolution = spoken.resolve(self.board, transcript, self.pending)
+        self.pending = resolution.candidates if resolution.kind == "ambiguous" else []
+        return resolution
+
+    def hints(self) -> list[str]:
+        return spoken.hint_phrases(self.board)
+
     def describe_move(self, move: chess.Move) -> dict:
         """Describe a legal move on the current board, before it is pushed."""
         board = self.board
@@ -141,6 +158,7 @@ class Game:
             "promotion": chess.piece_name(move.promotion) if move.promotion else None,
             "check": after.is_check(),
             "checkmate": after.is_checkmate(),
+            "spoken": spoken.speak_move(board, move),
         }
 
     def move_list(self) -> list[str]:
@@ -172,6 +190,7 @@ class Game:
             "game_over": outcome is not None,
             "result": outcome.result() if outcome else None,
             "termination": outcome.termination.name.lower() if outcome else None,
+            "spoken_result": spoken.spoken_result(outcome, self.player) if outcome else None,
         }
 
     def board_read(self) -> dict:

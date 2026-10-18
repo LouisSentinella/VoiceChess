@@ -11,6 +11,7 @@ import chess
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from . import spoken
 from .engines import EngineConfig, EngineError, EnginePool
 from .game import Game, MoveError, OpponentSpec
 
@@ -24,6 +25,11 @@ class NewGame(BaseModel):
 
 class MoveRequest(BaseModel):
     move: str  # SAN ("Nf3", "O-O") or UCI ("g1f3")
+
+
+class SayRequest(BaseModel):
+    transcript: str
+    confirm: bool = False  # resolve but do not play; ask the player first
 
 
 class Games:
@@ -92,32 +98,73 @@ async def new_game(req: NewGame):
     return {"bot_move": bot_move, "state": game.state()}
 
 
+def _check_turn(game: Game) -> None:
+    if game.is_over():
+        raise HTTPException(409, "The game is over.")
+    if game.board.turn != game.player:
+        raise HTTPException(409, "It is not your turn.")
+
+
+async def _play(game: Game, move: chess.Move) -> dict:
+    """Play the player's move, then the bot's reply. Caller holds the game lock."""
+    player_move = game.describe_move(move)
+    game.play(move)
+
+    bot_move = None
+    if not game.is_over():
+        try:
+            bot_move = await _bot_move(game)
+        except EngineError as e:
+            game.board.pop()  # the player's move stands only if the reply happened
+            raise HTTPException(502, str(e)) from None
+    return {"player_move": player_move, "bot_move": bot_move, "state": game.state()}
+
+
 @app.post("/game/{game_id}/move")
 async def play_move(game_id: str, req: MoveRequest):
     game = app.state.games.get(game_id)
     async with app.state.games.locks[game_id]:
-        if game.is_over():
-            raise HTTPException(409, "The game is over.")
-        if game.board.turn != game.player:
-            raise HTTPException(409, "It is not your turn.")
+        _check_turn(game)
         try:
             move = game.resolve_move(req.move)
         except MoveError as e:
             raise HTTPException(
                 422, {"error": e.kind, "message": e.message, "candidates": e.candidates}
             ) from None
+        return await _play(game, move)
 
-        player_move = game.describe_move(move)
-        game.board.push(move)
 
-        bot_move = None
-        if not game.is_over():
-            try:
-                bot_move = await _bot_move(game)
-            except EngineError as e:
-                game.board.pop()  # the player's move stands only if the reply happened
-                raise HTTPException(502, str(e)) from None
-        return {"player_move": player_move, "bot_move": bot_move, "state": game.state()}
+def _candidate(game: Game, move: chess.Move) -> dict:
+    return {"san": game.board.san(move), "spoken": spoken.speak_move(game.board, move)}
+
+
+@app.post("/game/{game_id}/say")
+async def say(game_id: str, req: SayRequest):
+    """Resolve a speech transcript. Misses are normal outcomes, so always HTTP 200."""
+    game = app.state.games.get(game_id)
+    async with app.state.games.locks[game_id]:
+        _check_turn(game)
+        r = game.resolve_speech(req.transcript)
+        if r.kind == "no_match":
+            return {"status": "no_match", "message": r.message}
+        if r.kind == "ambiguous":
+            return {
+                "status": "ambiguous",
+                "message": r.message,
+                "candidates": [_candidate(game, m) for m in r.candidates],
+            }
+        if r.kind == "confirm" or req.confirm:
+            return {
+                "status": "confirm",
+                "candidate": _candidate(game, r.move),
+                "message": spoken.confirm_message(game.board, r.move),
+            }
+        return {"status": "played", **await _play(game, r.move)}
+
+
+@app.get("/game/{game_id}/hints")
+async def get_hints(game_id: str):
+    return {"phrases": app.state.games.get(game_id).hints()}
 
 
 @app.get("/game/{game_id}/state")
