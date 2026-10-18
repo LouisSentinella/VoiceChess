@@ -93,7 +93,7 @@ The server records, per listener, when they lose track of the board: a spoken mo
 
 ```json
 {"illegal_attempts":3,"lookups":9,"by_piece":{"knight":4,"bishop":2},"by_square":{"e5":3},
- "spoken":"You asked about the board 9 times and tried 3 illegal moves, mostly with the knight.",
+ "spoken":"You asked about the board 9 times and tried 3 illegal moves. The piece you lose track of most is the knight.",
  "recent":[{"time":"2026-10-18T19:10:00Z","kind":"lookup","detail":"where is knight","game":"abc"}]}
 ```
 

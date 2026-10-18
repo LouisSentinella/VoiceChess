@@ -110,6 +110,32 @@ def answer(game: Game, question: str) -> str | None:
     return None
 
 
+def lookup(question: str) -> tuple[int | None, int | None, str] | None:
+    """If this is a "where is / what is on / attacking / defending" question, return
+    (piece, square, detail) for the mistake log, else None."""
+    q = re.sub(r"\b(knight|bishop|rook|queen|pawn|king)s\b", r"\1", question.lower())
+    q = q.replace("what's", "what is").replace("whats", "what is").replace("where's", "where is")
+    said = spoken.parse(q)
+    squares = _squares(said)
+    piece = next((v for k, v in said.tags if k == "piece"), None)
+    square = squares[0] if squares else None
+    if square is not None and re.search(r"\b(attack\w*|hitting|threaten\w*|defend\w*|protect\w*)\b", q):
+        return None, square, f"attackers or defenders of {chess.square_name(square)}"
+    if square is not None and re.match(r"^\s*(what|which)\b", q):
+        return None, square, f"what is on {chess.square_name(square)}"
+    if piece is not None and re.match(r"^\s*where\b", q):
+        return piece, None, f"where is {chess.piece_name(piece)}"
+    return None
+
+
+def asks_about_mistakes(question: str) -> bool:
+    return bool(re.search(
+        r"\b(my|the) (common |usual |typical )?(mistakes?|weakness(es)?|errors?)\b|mistake log|"
+        r"(keep|always) (forgetting|losing track|getting)|what do i (get wrong|forget)",
+        question.lower(),
+    ))
+
+
 def _last_moves(game: Game, q: str) -> str:
     stack = game.board.move_stack
     if not stack:

@@ -10,6 +10,7 @@ from .analysis import Analyzer
 from .facts import build_facts
 from .game import Game
 from .llm import LlmClient, LlmError
+from .mistakes import MistakeLog
 from .spoken import san_to_speech
 
 MAX_SENTENCE = 220
@@ -88,11 +89,23 @@ def _messages(game: Game, question: str, facts: str) -> list[dict]:
 
 
 async def answer(
-    game: Game, question: str, analyzer: Analyzer | None, llm: LlmClient | None
+    game: Game,
+    question: str,
+    analyzer: Analyzer | None,
+    llm: LlmClient | None,
+    log: MistakeLog | None = None,
 ) -> AsyncIterator[dict]:
     """Yield /ask stream events: sentence..., then done or error."""
+    if log is not None and qa.asks_about_mistakes(question):
+        yield {"type": "sentence", "text": log.summary()["spoken"]}
+        yield {"type": "done"}
+        return
+
     direct = qa.answer(game, question)
     if direct is not None:
+        if log is not None and (found := qa.lookup(question)):
+            piece, square, detail = found
+            log.record("lookup", game.id, len(game.board.move_stack), detail, piece, square)
         yield {"type": "sentence", "text": direct}
         yield {"type": "done"}
         return

@@ -14,11 +14,12 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import coach, qa, spoken
+from . import coach, qa, review, spoken
 from .analysis import Analyzer
 from .engines import EngineConfig, EngineError, EnginePool
 from .game import Game, MoveError, OpponentSpec
 from .llm import LlmClient, backends_from_env
+from .mistakes import MistakeLog
 from .tts import MAX_TEXT, Tts, TtsError
 
 
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
     app.state.analyzer = Analyzer(config.stockfish)
     app.state.llm = LlmClient(backends_from_env())
     app.state.background = set()
+    app.state.log = MistakeLog()
     warm = asyncio.create_task(app.state.tts.warm())  # first phrase should not pay the model load
     yield
     warm.cancel()
@@ -90,6 +92,7 @@ async def lifespan(app: FastAPI):
     await app.state.pool.close()
     await app.state.analyzer.close()
     await app.state.llm.close()
+    app.state.log.close()
 
 
 app = FastAPI(title="Voice Chess Coach server", lifespan=lifespan)
@@ -187,6 +190,16 @@ def _candidate(game: Game, move: chess.Move) -> dict:
     return {"san": game.board.san(move), "spoken": spoken.speak_move(game.board, move)}
 
 
+def _log_illegal_attempt(game: Game, transcript: str) -> None:
+    """A transcript that names a piece and a square but matches no legal move is a lost-track signal."""
+    said = spoken.parse(transcript)
+    if said.piece is not None and said.dest is not None and said.castle is None:
+        app.state.log.record(
+            "illegal_attempt", game.id, len(game.board.move_stack),
+            transcript.strip(), said.piece, said.dest,
+        )
+
+
 @app.post("/game/{game_id}/say")
 async def say(game_id: str, req: SayRequest):
     """Resolve a speech transcript. Misses are normal outcomes, so always HTTP 200."""
@@ -197,6 +210,7 @@ async def say(game_id: str, req: SayRequest):
         _check_turn(game)
         r = game.resolve_speech(req.transcript)
         if r.kind == "no_match":
+            _log_illegal_attempt(game, req.transcript)
             return {"status": "no_match", "message": r.message}
         if r.kind == "ambiguous":
             return {
@@ -224,7 +238,9 @@ async def ask(game_id: str, req: AskRequest):
     async def events():
         # Held for the whole answer: the position must not change under the model.
         async with app.state.games.locks[game_id]:
-            async for event in coach.answer(game, question, app.state.analyzer, app.state.llm):
+            async for event in coach.answer(
+                game, question, app.state.analyzer, app.state.llm, app.state.log
+            ):
                 yield json.dumps(event) + "\n"
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
@@ -274,3 +290,36 @@ async def tts_speak(req: TtsRequest):
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     return Response(wav, media_type="audio/wav")
+
+
+@app.get("/game/{game_id}/review")
+async def game_review(game_id: str):
+    game = app.state.games.get(game_id)
+    async with app.state.games.locks[game_id]:
+        return await review.review(game, app.state.analyzer)
+
+
+@app.post("/game/{game_id}/review/{ply}/explain")
+async def explain_moment(game_id: str, ply: int):
+    """Stream a spoken explanation of one of the listener's moves, as the game stood after it."""
+    game = app.state.games.get(game_id)
+    if ply not in review.listener_plies(game):
+        raise HTTPException(404, f"Ply {ply} is not one of your moves.")
+    moment = review.moment_game(game, ply)
+    before = moment.board.copy()
+    move = before.pop()
+    question = (
+        f"Explain why my move {spoken.speak_move(before, move).lower()} was a mistake "
+        "and what I should have played instead."
+    )
+
+    async def events():
+        async for event in coach.answer(moment, question, app.state.analyzer, app.state.llm):
+            yield json.dumps(event) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")
+
+
+@app.get("/log/summary")
+async def log_summary():
+    return app.state.log.summary()
