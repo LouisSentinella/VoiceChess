@@ -268,7 +268,7 @@ final class BoardPositionTests: XCTestCase {
         XCTAssertEqual(MoveList.recent(["e4", "e5", "Nf3"]), "1. e4 e5 2. Nf3")
         let moves = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]
         XCTAssertEqual(MoveList.recent(moves, plies: 3), "… 2... Nc6 3. Bb5 a6")
-        XCTAssertEqual(MoveList.recent(moves, plies: 4), "… 3. Bb5 a6")
+        XCTAssertEqual(MoveList.recent(moves, plies: 4), "… 2. Nf3 Nc6 3. Bb5 a6")
         XCTAssertEqual(MoveList.recent(moves, plies: 6), "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6")
     }
 }
