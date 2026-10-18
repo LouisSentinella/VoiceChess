@@ -8,3 +8,11 @@ DerivedData/
 __pycache__/
 .venv/
 Config/Info.plist
+
+# QUEEN trial (experiments/queen): commit only the scripts, positions and RESULTS.md.
+# Weights, HF repos, venvs, logs, caches and raw result dumps stay local.
+experiments/queen/*
+!experiments/queen/RESULTS.md
+!experiments/queen/positions.json
+!experiments/queen/run_trial.py
+!experiments/queen/queen_worker.py

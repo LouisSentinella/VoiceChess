@@ -1,0 +1,23 @@
+[
+  {"id": "open-start", "category": "opening", "note": "initial position", "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"},
+  {"id": "open-e4-e5", "category": "opening", "note": "1.e4 e5", "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"},
+  {"id": "open-sicilian", "category": "opening", "note": "1.e4 c5 2.Nf3, black to move", "fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"},
+  {"id": "open-qgd", "category": "opening", "note": "QGD after 1.d4 d5 2.c4 e6 3.Nc3 Nf6", "fen": "rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4"},
+  {"id": "open-italian", "category": "opening", "note": "Italian / Two Knights, white to move", "fen": "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"},
+  {"id": "open-kid", "category": "opening", "note": "King's Indian setup", "fen": "rnbqk2r/ppp1ppbp/3p1np1/8/2PPP3/2N5/PP3PPP/R1BQKBNR w KQkq - 0 5"},
+  {"id": "mid-ruy-closed", "category": "middlegame", "note": "Closed Ruy Lopez, no obvious tactic", "fen": "r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - 6 8"},
+  {"id": "mid-giuoco", "category": "middlegame", "note": "Giuoco Pianissimo, slow manoeuvring", "fen": "r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 7"},
+  {"id": "mid-quiet", "category": "quiet", "note": "Symmetrical-ish QGD structure; needs a quiet positional move", "fen": "r1bq1rk1/pp2bppp/2n1pn2/2pp4/2PP4/2N1PN2/PP2BPPP/R1BQ1RK1 w - - 0 8"},
+  {"id": "tac-mate1-white", "category": "tactic", "note": "Qxf7# (mate in 1)", "fen": "r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"},
+  {"id": "tac-mate1-black", "category": "tactic", "note": "...Qh4# (mate in 1), black to move", "fen": "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2"},
+  {"id": "tac-win-queen", "category": "tactic", "note": "Nxh4 wins the queen", "fen": "rnb1kbnr/pppp1ppp/8/4p3/4P2q/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"},
+  {"id": "tac-fork", "category": "tactic", "note": "Nc7+ forks king and rook", "fen": "r3k2r/pp3ppp/2n5/3Np3/8/8/PPP2PPP/R3K2R w KQkq - 0 1"},
+  {"id": "mate-in-2", "category": "forced-mate-2", "note": "K+R vs K, forced mate in 2 (e.g. Kb6 Kb8 Rh8#)", "fen": "k7/8/2K5/8/8/8/8/7R w - - 0 1"},
+  {"id": "threat-qxf7", "category": "opponent-threat", "note": "White threatens Qxf7#; black must defend", "fen": "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR b KQkq - 5 4"},
+  {"id": "threat-pawn-fork", "category": "opponent-threat", "note": "White pawn on e5 attacks the f6 knight", "fen": "rnbqkb1r/ppp1pppp/5n2/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq - 0 3"},
+  {"id": "threat-passed-pawn", "category": "opponent-threat", "note": "Black pawn on a2 threatens to queen; white must stop it", "fen": "8/8/8/8/3k4/8/p4K2/6R1 w - - 0 1"},
+  {"id": "end-lucena", "category": "endgame", "note": "Lucena position; winning idea is Rc4 (bridge)", "fen": "1K1k4/1P6/8/8/8/8/r7/2R5 w - - 0 1"},
+  {"id": "end-kp", "category": "endgame", "note": "King and pawn vs king, opposition subtleties", "fen": "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1"},
+  {"id": "end-bn", "category": "endgame", "note": "Bishop vs knight; the f3 knight is attacked and must be defended (g4 holds)", "fen": "8/5pk1/6p1/3b4/8/5NP1/5PK1/8 w - - 0 1"},
+  {"id": "end-rook", "category": "endgame", "note": "Rook endgame, active rook matters", "fen": "8/5pk1/6p1/8/2R5/6P1/r4PK1/8 w - - 0 1"}
+]
