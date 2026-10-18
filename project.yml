@@ -6,21 +6,34 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+packages:
+  VoiceChessCore:
+    path: Packages/VoiceChessCore
 targets:
   VoiceChess:
     type: application
     platform: iOS
     sources:
       - VoiceChess
+    dependencies:
+      - package: VoiceChessCore
+    info:
+      path: Config/Info.plist
+      properties:
+        CFBundleDisplayName: Voice Chess
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSMicrophoneUsageDescription: Voice Chess listens to your spoken chess moves.
+        NSSpeechRecognitionUsageDescription: Voice Chess converts your spoken moves to text so it can play them.
+        UIBackgroundModes:
+          - audio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.louissentinella.voicechess
         PRODUCT_NAME: VoiceChess
-        MARKETING_VERSION: "0.1"
-        CURRENT_PROJECT_VERSION: "1"
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Voice Chess
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        MARKETING_VERSION: "0.2"
+        CURRENT_PROJECT_VERSION: "2"
         TARGETED_DEVICE_FAMILY: "1"
