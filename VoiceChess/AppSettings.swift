@@ -19,6 +19,8 @@ final class AppSettings: ObservableObject {
         static let keepAwake = "keepAwake"
         static let side = "side"
         static let maiaLevel = "maiaLevel"
+        static let helpLevel = "helpLevel"
+        static let boardHidden = "boardHidden"
     }
 
     @Published var serverURL: String {
@@ -59,6 +61,14 @@ final class AppSettings: ObservableObject {
     @Published var maiaLevel: Int {
         didSet { UserDefaults.standard.set(maiaLevel, forKey: Key.maiaLevel) }
     }
+    /// How much is announced without being asked.
+    @Published var helpLevel: HelpLevel {
+        didSet { UserDefaults.standard.set(helpLevel.rawValue, forKey: Key.helpLevel) }
+    }
+    /// Blindfold mode: the board shows a placeholder until revealed.
+    @Published var boardHidden: Bool {
+        didSet { UserDefaults.standard.set(boardHidden, forKey: Key.boardHidden) }
+    }
 
     init() {
         let defaults = UserDefaults.standard
@@ -75,6 +85,8 @@ final class AppSettings: ObservableObject {
         side = SidePreference(rawValue: defaults.string(forKey: Key.side) ?? "") ?? .random
         let level = defaults.integer(forKey: Key.maiaLevel)
         maiaLevel = Self.maiaLevels.contains(level) ? level : 1500
+        helpLevel = HelpLevel(rawValue: defaults.string(forKey: Key.helpLevel) ?? "") ?? .moves
+        boardHidden = defaults.object(forKey: Key.boardHidden) as? Bool ?? false
         UIApplication.shared.isIdleTimerDisabled = keepAwake
     }
 
@@ -91,6 +103,16 @@ final class AppSettings: ObservableObject {
     func makeAPI(log: DebugLog) throws -> APIClient {
         guard let url = baseURL else { throw APIError.unreachable("invalid server URL") }
         return APIClient(baseURL: url, log: { line in Task { @MainActor in log.log(line) } })
+    }
+}
+
+extension HelpLevel {
+    var title: String {
+        switch self {
+        case .full: return "Full"
+        case .moves: return "Moves only"
+        case .nothing: return "Nothing"
+        }
     }
 }
 

@@ -89,6 +89,17 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegat
         await speakLocally(text)
     }
 
+    /// Plays the turn tone to the end (or until `stop`). Failure is only logged.
+    func playTone() async {
+        stop()
+        generation += 1
+        let id = generation
+        busy = true
+        defer { if generation == id { busy = false } }
+        let played = await play(TurnTone.wav, text: "turn tone")
+        if !played { log.log("Turn tone could not be played") }
+    }
+
     /// Stops any speech immediately and resumes the pending `say`.
     func stop() {
         generation += 1

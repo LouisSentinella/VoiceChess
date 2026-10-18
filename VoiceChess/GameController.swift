@@ -18,6 +18,12 @@ final class GameController: ObservableObject {
         case failed
     }
 
+    /// What to say after a move or at the start of a game, and whether to play the turn tone after it.
+    private struct Announcement {
+        var text: String?
+        var tone: Bool
+    }
+
     private static let confirmPhrases = ["yes", "no", "yeah", "yep", "nope", "play it", "cancel", "correct", "wrong"]
 
     let settings = AppSettings()
@@ -38,6 +44,14 @@ final class GameController: ObservableObject {
     @Published private(set) var coachAnswer = ""
     /// The coach is thinking about or speaking an answer; the big button then stops it.
     @Published private(set) var answering = false
+    /// The last text the app spoke for "repeat"; shown instead of the move list while the board is hidden.
+    @Published private(set) var lastSpoken = ""
+    /// Seconds left of a temporary reveal of the hidden board; 0 when it is not revealed.
+    @Published private(set) var revealSecondsLeft = 0
+    /// A post-game review is running (summary, moves, explanations or the "Next?" prompt).
+    @Published private(set) var reviewing = false
+    /// The reviewed move whose position is on the board.
+    @Published private(set) var reviewMoment: ReviewMoment?
 
     private let audio: AudioSessionController
     private let speaker: Speaker
@@ -47,12 +61,12 @@ final class GameController: ObservableObject {
     private var flowID = 0
     private var hintsTask: Task<Void, Never>?
     private var hints: [String] = []
-    private var lastSpoken = ""
     private var prepared = false
     /// Consecutive listens that heard nothing; the "did not hear" line is spoken only for the first.
     private var silentCycles = 0
-    /// Reply the user has not heard yet (the flow was stopped after the move was applied).
-    private var pendingAnnouncement: String?
+    /// What the user has not heard yet (the flow was stopped after the move was applied).
+    private var pendingAnnouncement: Announcement?
+    private var revealTask: Task<Void, Never>?
     private var appActive = true
     private var interrupted = false
     /// Auto-listen was running when the system stopped it; resume when the app is active and uninterrupted.
@@ -73,7 +87,7 @@ final class GameController: ObservableObject {
     func prepare() async {
         guard !prepared else { return }
         prepared = true
-        log.log("App started \(AppInfo.version), server \(settings.serverURL), auto-listen \(settings.autoListen), server voice \(settings.serverVoiceEnabled), ask the coach \(settings.askCoach)")
+        log.log("App started \(AppInfo.version), server \(settings.serverURL), auto-listen \(settings.autoListen), server voice \(settings.serverVoiceEnabled), ask the coach \(settings.askCoach), help level \(settings.helpLevel.rawValue), board \(settings.boardHidden ? "hidden" : "shown")")
         log.log("On-device recognition supported: \(listener.supportsOnDeviceRecognition)")
         let center = NotificationCenter.default
         center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main) { [weak self] _ in
@@ -152,7 +166,7 @@ final class GameController: ObservableObject {
 
     /// The big button: Pause while auto-listen runs; otherwise Listen (push-to-talk), or Done while listening.
     func primaryAction() {
-        if answering {
+        if answering || reviewing {
             stopAnswer()
             return
         }
@@ -174,9 +188,9 @@ final class GameController: ObservableObject {
         }
     }
 
-    /// Cancels the coach's answer (button tap) and listens again, or goes idle when auto-listen is off or paused.
+    /// Cancels the coach's answer or the review (button tap) and listens again, or goes idle when auto-listen is off or paused.
     private func stopAnswer() {
-        log.log("Stop tapped: cancelling the coach's answer")
+        log.log("Stop tapped: cancelling the \(reviewing ? "review" : "coach's answer")")
         cancelFlow()
         status = .idle
         if shouldRelisten { startFlow { [self] in try await conversation() } }
@@ -208,6 +222,73 @@ final class GameController: ObservableObject {
             try await speak("Knight to f3, check")
             if resume { try await conversation() }
         }
+    }
+
+    /// Reads `text` aloud (the mistake log). Auto-listen picks up again afterwards.
+    func readAloud(_ text: String) {
+        let resume = autoListening && shouldRelisten
+        log.log("Read aloud: \(text)")
+        startFlow { [self] in
+            try await speak(text)
+            if resume { try await conversation() }
+        }
+    }
+
+    /// The Review button: goes through the worst moves of the game with explanations.
+    func startReview() {
+        paused = false
+        resumeWanted = false
+        log.log("Review requested by button")
+        startFlow { [self] in
+            guard try await guarded({ try await review() }) else { return }
+            if shouldRelisten { try await conversation() }
+        }
+    }
+
+    /// The Review button is offered once the game is over or has a few moves to go through.
+    var canReview: Bool {
+        guard let game, !reviewing else { return false }
+        return game.gameOver || game.moves.count >= 4
+    }
+
+    // MARK: Board visibility
+
+    static let revealSeconds = 10
+
+    /// False while the board is hidden. The SAN move list and the last-move lines must then stay
+    /// off the screen too, because they would give the position away.
+    var movesVisible: Bool {
+        !settings.boardHidden || revealSecondsLeft > 0
+    }
+
+    /// False while the board is hidden: the placeholder is shown instead. A review always shows its position.
+    var boardVisible: Bool {
+        movesVisible || reviewMoment != nil || game == nil
+    }
+
+    /// Shows a hidden board for `revealSeconds`, counting down once a second.
+    func reveal() {
+        revealTask?.cancel()
+        revealSecondsLeft = Self.revealSeconds
+        log.log("Board revealed for \(Self.revealSeconds) s")
+        revealTask = Task { [weak self] in
+            for _ in 0..<Self.revealSeconds {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                self.revealSecondsLeft -= 1
+            }
+        }
+    }
+
+    /// Hides a revealed board immediately.
+    func endReveal() {
+        revealTask?.cancel()
+        revealTask = nil
+        revealSecondsLeft = 0
+    }
+
+    func toggleReveal() {
+        if revealSecondsLeft > 0 { endReveal() } else { reveal() }
     }
 
     /// Whether to listen again after the current turn.
@@ -246,6 +327,8 @@ final class GameController: ObservableObject {
         flow = nil
         flowActive = false
         answering = false
+        reviewing = false
+        reviewMoment = nil
         speaker.stop()
         listener.cancel()
     }
@@ -409,6 +492,26 @@ final class GameController: ObservableObject {
             log.log("Stop heard while listening: nothing to stop")
         case .repeatLast:
             try await speak(lastSpoken.isEmpty ? "Nothing to repeat." : lastSpoken)
+        case let .helpLevel(level):
+            settings.helpLevel = level
+            log.log("Help level set to \(level.rawValue)")
+            switch level {
+            case .full: try await speak("Help level full. I will announce every move.")
+            case .moves: try await speak("Help level moves only. I will announce my moves.")
+            case .nothing: try await speak("Help level nothing. You will hear a tone when it is your turn.")
+            }
+        case .showBoard:
+            if settings.boardHidden {
+                reveal()
+            } else {
+                log.log("Show the board: it is already shown")
+            }
+        case .hideBoard:
+            settings.boardHidden = true
+            endReveal()
+            log.log("Board hidden by voice")
+        case .review:
+            try await review()
         case .readBoard, .readMyPieces:
             guard let game else {
                 try await speak("No game in progress.")
@@ -452,14 +555,19 @@ final class GameController: ObservableObject {
         defer { if flowID == id { answering = false } }
         status = .thinking
         log.log("Ask: '\(question)'")
+        _ = try await speakStream(api.ask(gameID: gameID, question: question), label: "Ask")
+    }
 
+    /// Speaks the sentences of an answer stream as they arrive and shows them in the coach box.
+    /// Returns what was spoken. A broken stream is spoken once if it had already delivered something.
+    private func speakStream(_ events: AnswerStream, label: String) async throws -> [String] {
         // The reader takes sentences off the network as they arrive and starts fetching the speech
         // for each one after the first, while the loop below speaks them one after another.
         let (sentences, relay) = Self.makeRelay()
         let reader = Task { [weak self] in
             var count = 0
             do {
-                for try await event in api.ask(gameID: gameID, question: question) {
+                for try await event in events {
                     switch event {
                     case let .sentence(text):
                         count += 1
@@ -479,25 +587,27 @@ final class GameController: ObservableObject {
         }
         defer { reader.cancel() }
 
-        var spoken = 0
+        var spoken: [String] = []
         do {
             for try await event in sentences {
                 switch event {
                 case let .sentence(text):
-                    spoken += 1
+                    spoken.append(text)
                     try await speak(text)
                 case let .error(message):
-                    log.log("Ask: coach reported an error: \(message)")
+                    log.log("\(label): coach reported an error: \(message)")
+                    spoken.append(message)
                     try await speak(message)
                 case .done:
-                    log.log("Ask done: \(spoken) sentences spoken")
+                    log.log("\(label) done: \(spoken.count) lines spoken")
                 }
             }
-        } catch let error as APIError where spoken > 0 {
-            log.log("Ask stream broke after \(spoken) sentences: \(error.localizedDescription)")
+        } catch let error as APIError where !spoken.isEmpty {
+            log.log("\(label) stream broke after \(spoken.count) lines: \(error.localizedDescription)")
             appendCoach(Self.lostConnection)
             try await speak(Self.lostConnection)
         }
+        return spoken
     }
 
     private func appendCoach(_ text: String) {
@@ -515,6 +625,74 @@ final class GameController: ObservableObject {
         return (stream, continuation)
     }
 
+    // MARK: Review
+
+    /// Goes through the listener's worst moves one by one: the position is shown with the move
+    /// highlighted, the move and the better one are spoken, then the explanation streams in.
+    /// Voice input during the review goes only to `reviewPrompt`, so no spoken move can reach /say.
+    private func review() async throws {
+        guard let game else {
+            try await speak("No game in progress.")
+            return
+        }
+        status = .thinking
+        let api = try makeAPI()
+        let review = try await api.review(gameID: game.id)
+        try Task.checkCancellation()
+        let id = flowID
+        reviewing = true
+        log.log("Review started: \(review.moments.count) moments")
+        defer {
+            if flowID == id {
+                reviewing = false
+                reviewMoment = nil
+                clearCoach()
+                log.log("Review ended")
+            }
+        }
+        try await speak(review.summary)
+        for (index, moment) in review.moments.enumerated() {
+            reviewMoment = moment
+            coachQuestion = "Move \(moment.moveNumber): \(moment.san)"
+            coachAnswer = ""
+            try await speak("Move \(moment.moveNumber): you played \(moment.spoken), \(moment.label). Better was \(moment.bestSpoken).")
+            status = .thinking
+            let explanation = try await speakStream(api.explain(gameID: game.id, ply: moment.ply), label: "Review ply \(moment.ply)")
+            guard index < review.moments.count - 1 else { break }
+            var command = try await reviewPrompt(gameID: game.id)
+            while command == .repeatExplanation {
+                for line in explanation { try await speak(line) }
+                command = try await reviewPrompt(gameID: game.id)
+            }
+            if command == .leave { return }
+        }
+        if !review.moments.isEmpty { try await speak("That was the last one.") }
+    }
+
+    /// Asks "Next?" and waits for a review command. Questions go to the coach, anything else is refused.
+    private func reviewPrompt(gameID: String) async throws -> ReviewCommand {
+        try await speak("Next?")
+        var silent = 0
+        while true {
+            switch try await hear(contextual: ReviewCommand.phrases) {
+            case .failed:
+                return .leave
+            case .nothing:
+                silent += 1
+                if silent == 1 { try await speak("Say next, repeat, or stop.") }
+            case let .text(text):
+                log.log("Review heard: '\(text)'")
+                if let command = ReviewCommand.parse(text) { return command }
+                if QuestionDetector.isQuestion(text) {
+                    _ = try await guarded { try await ask(text, gameID: gameID) }
+                    try await speak("Next?")
+                } else {
+                    try await speak("We are reviewing; say stop to leave.")
+                }
+            }
+        }
+    }
+
     // MARK: Game
 
     private func beginNewGame() async throws {
@@ -530,8 +708,18 @@ final class GameController: ObservableObject {
         silentCycles = 0
         refreshHints()
         var text = "You are \(created.state.player)."
-        if let bot = created.botMove { text += " I play \(bot.spoken)." }
-        pendingAnnouncement = text
+        var tone = false
+        switch settings.helpLevel {
+        case .full:
+            if let bot = created.botMove { text += " I play \(bot.spoken)." }
+            text += " Your move."
+        case .moves:
+            if let bot = created.botMove { text += " I play \(bot.spoken)." }
+        case .nothing:
+            tone = created.botMove != nil
+        }
+        log.log("Announcement at help level \(settings.helpLevel.rawValue): \(text)\(tone ? " + tone" : "")")
+        pendingAnnouncement = Announcement(text: text, tone: tone)
         if let previous {
             Task { [log] in
                 do { try await api.deleteGame(gameID: previous) } catch { log.log("Deleting old game failed: \(error.localizedDescription)") }
@@ -549,15 +737,40 @@ final class GameController: ObservableObject {
         botLine = result.botMove?.spoken ?? ""
         clearCoach()
         refreshHints()
+        pendingAnnouncement = announcement(for: result)
+    }
+
+    /// What to say (and whether to play the turn tone) after a move, by help level:
+    /// full announces both moves, check and the turn; moves only the bot's reply; nothing only the result and a tone.
+    private func announcement(for result: MoveResult) -> Announcement? {
+        let state = result.state
+        let myTurn = !state.gameOver && state.yourTurn
         var parts: [String] = []
-        if let bot = result.botMove { parts.append(bot.spoken) }
-        if let over = result.state.spokenResult { parts.append(over) }
-        pendingAnnouncement = parts.isEmpty ? nil : parts.joined(separator: ". ")
+        switch settings.helpLevel {
+        case .full:
+            parts.append(result.playerMove.spoken)
+            if let bot = result.botMove { parts.append(bot.spoken) }
+            if state.inCheck, !state.gameOver { parts.append("You are in check") }
+            if myTurn { parts.append("Your move") }
+        case .moves:
+            if let bot = result.botMove { parts.append(bot.spoken) }
+        case .nothing:
+            break
+        }
+        if let over = state.spokenResult { parts.append(over) }
+        let tone = settings.helpLevel == .nothing && myTurn
+        let text = parts.isEmpty ? nil : parts.joined(separator: ". ")
+        log.log("Announcement at help level \(settings.helpLevel.rawValue): \(text ?? "-")\(tone ? " + tone" : "")")
+        return text == nil && !tone ? nil : Announcement(text: text, tone: tone)
     }
 
     private func speakPending() async throws {
-        guard let text = pendingAnnouncement else { return }
-        try await speak(text, remember: true)
+        guard let pending = pendingAnnouncement else { return }
+        if let text = pending.text {
+            try await speak(text, remember: true)
+            pendingAnnouncement?.text = nil
+        }
+        if pending.tone { try await playTurnTone() }
         pendingAnnouncement = nil
     }
 
@@ -580,17 +793,29 @@ final class GameController: ObservableObject {
 
     // MARK: Speech and errors
 
-    private func speak(_ text: String, remember: Bool = false) async throws {
+    private func beginPlayback() throws {
         try Task.checkCancellation()
         do {
             try audio.activate()
         } catch {
-            log.log("Audio session activation failed before speaking: \(error.localizedDescription)")
+            log.log("Audio session activation failed before playback: \(error.localizedDescription)")
         }
-        if remember { lastSpoken = text }
         status = .speaking
+    }
+
+    private func speak(_ text: String, remember: Bool = false) async throws {
+        try beginPlayback()
+        if remember { lastSpoken = text }
         log.log("Speak: \(text)")
         await speaker.say(text)
+        try Task.checkCancellation()
+    }
+
+    /// The tone that tells the player it is their turn at help level Nothing.
+    private func playTurnTone() async throws {
+        try beginPlayback()
+        log.log("Turn tone")
+        await speaker.playTone()
         try Task.checkCancellation()
     }
 

@@ -39,6 +39,22 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Help level", selection: $settings.helpLevel) {
+                        ForEach(HelpLevel.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    Picker("Board", selection: $settings.boardHidden) {
+                        Text("Shown").tag(false)
+                        Text("Hidden").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    NavigationLink("Mistake log") { MistakeLogView(settings: settings, controller: controller) }
+                } header: {
+                    Text("Blindfold training")
+                } footer: {
+                    Text("Full announces your move, my reply, check and \"Your move\". Moves only announces my reply. Nothing plays a tone when it is your turn; ask \"last move\" or say \"read the board\" to find out. Hidden shows a placeholder instead of the board; tap Reveal to see it for 10 seconds. You can also say \"help level full\", \"help level moves\", \"help level nothing\", \"show the board\" or \"hide the board\".")
+                }
+
+                Section {
                     Toggle("Server voice", isOn: $settings.serverVoiceEnabled)
                     if settings.serverVoiceEnabled {
                         Picker("Voice", selection: $settings.serverVoice) {

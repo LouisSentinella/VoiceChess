@@ -87,10 +87,37 @@ public struct APIClient: Sendable {
     /// `.done` or `.error`, and throws if the request fails or the connection ends before either.
     /// Terminating the stream cancels the request. Logs the start, the first-sentence latency and the total.
     public func ask(gameID: String, question: String) -> AsyncThrowingStream<AskEvent, Error> {
+        struct Body: Encodable { let question: String }
+        return eventStream(
+            path: "game/\(gameID)/ask",
+            detail: "\(question.count) characters",
+            body: { try JSONEncoder().encode(Body(question: question)) }
+        )
+    }
+
+    /// Streams the spoken explanation of one reviewed move (`ply` from `Review.moments`) in the same
+    /// event format and with the same guarantees as `ask`.
+    public func explain(gameID: String, ply: Int) -> AsyncThrowingStream<AskEvent, Error> {
+        eventStream(path: "game/\(gameID)/review/\(ply)/explain", detail: nil, body: { nil })
+    }
+
+    /// The post-game review: a summary and the moves worth going through (docs/api.md "Review").
+    public func review(gameID: String) async throws -> Review {
+        try await request("GET", "game/\(gameID)/review")
+    }
+
+    /// The listener's mistake log summary (docs/api.md "Mistake log").
+    public func logSummary() async throws -> LogSummary {
+        try await request("GET", "log/summary")
+    }
+
+    private func eventStream(
+        path: String, detail: String?, body: @escaping @Sendable () throws -> Data?
+    ) -> AsyncThrowingStream<AskEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await streamAsk(gameID: gameID, question: question) { continuation.yield($0) }
+                    try await streamEvents(path: path, detail: detail, body: try body()) { continuation.yield($0) }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -172,14 +199,14 @@ public struct APIClient: Sendable {
         return "HTTP \(status)"
     }
 
-    private func streamAsk(gameID: String, question: String, emit: (AskEvent) -> Void) async throws {
-        struct Body: Encodable { let question: String }
-        let path = "game/\(gameID)/ask"
+    private func streamEvents(path: String, detail: String?, body: Data?, emit: (AskEvent) -> Void) async throws {
         var req = URLRequest(url: baseURL.appendingPathComponent(path))
         req.httpMethod = "POST"
         req.timeoutInterval = 30
-        req.httpBody = try JSONEncoder().encode(Body(question: question))
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let body {
+            req.httpBody = body
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         req.setValue("application/x-ndjson", forHTTPHeaderField: "Accept")
 
         let started = Date()
@@ -198,7 +225,7 @@ public struct APIClient: Sendable {
             emit(event)
         }
 
-        log?("POST /\(path) started (\(question.count) characters)")
+        log?("POST /\(path) started" + (detail.map { " (\($0))" } ?? ""))
         do {
             #if canImport(FoundationNetworking)
             // No streaming URLSession API on Linux: read the whole body, then split it into lines.
@@ -215,12 +242,12 @@ public struct APIClient: Sendable {
             guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse("not an HTTP response") }
             log?("POST /\(path) -> \(http.statusCode) after \(elapsed())")
             guard (200..<300).contains(http.statusCode) else {
-                var body = Data()
+                var errorBody = Data()
                 for try await byte in bytes {
-                    body.append(byte)
-                    if body.count >= 4096 { break }
+                    errorBody.append(byte)
+                    if errorBody.count >= 4096 { break }
                 }
-                throw APIError.server(status: http.statusCode, detail: Self.detail(from: body, status: http.statusCode))
+                throw APIError.server(status: http.statusCode, detail: Self.detail(from: errorBody, status: http.statusCode))
             }
             for try await line in bytes.lines {
                 try handle(line)

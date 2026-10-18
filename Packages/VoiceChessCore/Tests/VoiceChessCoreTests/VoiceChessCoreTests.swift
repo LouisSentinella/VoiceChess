@@ -164,6 +164,50 @@ final class PhraseTests: XCTestCase {
         XCTAssertNil(VoiceCommand.parse("explain"))
         XCTAssertNil(VoiceCommand.parse("analyse the position"))
     }
+
+    func testHelpLevelBoardAndReviewCommands() {
+        XCTAssertEqual(VoiceCommand.parse("help level full"), .helpLevel(.full))
+        XCTAssertEqual(VoiceCommand.parse("Full help please"), .helpLevel(.full))
+        XCTAssertEqual(VoiceCommand.parse("help level moves"), .helpLevel(.moves))
+        XCTAssertEqual(VoiceCommand.parse("moves only"), .helpLevel(.moves))
+        XCTAssertEqual(VoiceCommand.parse("help level nothing"), .helpLevel(.nothing))
+        XCTAssertEqual(VoiceCommand.parse("no help"), .helpLevel(.nothing))
+        XCTAssertEqual(VoiceCommand.parse("show the board"), .showBoard)
+        XCTAssertEqual(VoiceCommand.parse("Reveal"), .showBoard)
+        XCTAssertEqual(VoiceCommand.parse("hide the board"), .hideBoard)
+        XCTAssertEqual(VoiceCommand.parse("review"), .review)
+        XCTAssertEqual(VoiceCommand.parse("Review my game"), .review)
+        XCTAssertEqual(VoiceCommand.parse("go through my mistakes"), .review)
+        // A move or question that merely contains the word is not a command.
+        XCTAssertNil(VoiceCommand.parse("knight to f three"))
+        XCTAssertNil(VoiceCommand.parse("why did the review say that"))
+        // Reading the board is still its own command.
+        XCTAssertEqual(VoiceCommand.parse("read the board"), .readBoard)
+    }
+
+    func testReviewCommands() {
+        for text in ["next", "Yes", "continue", "yeah please", "go on"] {
+            XCTAssertEqual(ReviewCommand.parse(text), .next, text)
+        }
+        for text in ["repeat", "Repeat that", "say that again"] {
+            XCTAssertEqual(ReviewCommand.parse(text), .repeatExplanation, text)
+        }
+        for text in ["stop", "Done", "no", "I'm done", "stop review"] {
+            XCTAssertEqual(ReviewCommand.parse(text), .leave, text)
+        }
+        XCTAssertNil(ReviewCommand.parse("knight to f three"))
+        XCTAssertNil(ReviewCommand.parse("what was the best move"))
+        XCTAssertNil(ReviewCommand.parse(""))
+    }
+
+    func testQuestionDetector() {
+        for text in ["what was better", "Why was that bad", "how do I defend", "explain that", "tell me more", "is e5 attacked"] {
+            XCTAssertTrue(QuestionDetector.isQuestion(text), text)
+        }
+        for text in ["knight to f three", "pawn takes d five", "castle kingside", "read the board", ""] {
+            XCTAssertFalse(QuestionDetector.isQuestion(text), text)
+        }
+    }
 }
 
 final class BoardPositionTests: XCTestCase {
@@ -452,5 +496,105 @@ final class AskClientTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? APIError, .server(status: 404, detail: "Unknown game"))
         }
+    }
+}
+
+private let reviewJSON = """
+{"summary":"You played 18 moves: 1 blunder and 1 mistake. Let's go through them.",
+ "moments":[
+  {"ply":6,"move_number":3,"san":"Qxf7+","spoken":"Queen takes f7, check","best_san":"Bc4",
+   "best_spoken":"Bishop to c4","loss_pawns":9.4,"label":"a blunder",
+   "fen_before":"r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 2 3",
+   "fen_after":"r1bqkbnr/pppp1Qpp/2n5/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 3","uci":"h5f7"}
+ ]}
+"""
+
+final class ReviewTests: XCTestCase {
+    private func makeClient() -> APIClient {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        return APIClient(baseURL: URL(string: "http://example.test")!, session: URLSession(configuration: config))
+    }
+
+    func testDecodesReview() throws {
+        let review = try JSONDecoder().decode(Review.self, from: Data(reviewJSON.utf8))
+        XCTAssertEqual(review.summary, "You played 18 moves: 1 blunder and 1 mistake. Let's go through them.")
+        XCTAssertEqual(review.moments.count, 1)
+        let moment = try XCTUnwrap(review.moments.first)
+        XCTAssertEqual(moment.ply, 6)
+        XCTAssertEqual(moment.moveNumber, 3)
+        XCTAssertEqual(moment.san, "Qxf7+")
+        XCTAssertEqual(moment.spoken, "Queen takes f7, check")
+        XCTAssertEqual(moment.bestSan, "Bc4")
+        XCTAssertEqual(moment.bestSpoken, "Bishop to c4")
+        XCTAssertEqual(moment.lossPawns, 9.4, accuracy: 0.001)
+        XCTAssertEqual(moment.label, "a blunder")
+        XCTAssertEqual(moment.uci, "h5f7")
+        let board = try XCTUnwrap(BoardPosition(fen: moment.fenBefore, lastMoveUci: moment.uci))
+        XCTAssertEqual(board.lastMove, LastMove(from: BoardPosition.squareIndex("h5")!, to: BoardPosition.squareIndex("f7")!))
+    }
+
+    func testDecodesEmptyReview() throws {
+        let review = try JSONDecoder().decode(
+            Review.self, from: Data(#"{"summary":"No big mistakes. Well played.","moments":[]}"#.utf8))
+        XCTAssertTrue(review.moments.isEmpty)
+    }
+
+    func testReviewRequest() async throws {
+        var seen: URLRequest?
+        StubProtocol.handler = { request in
+            seen = request
+            return (200, Data(reviewJSON.utf8))
+        }
+        let review = try await makeClient().review(gameID: "abc")
+        XCTAssertEqual(seen?.httpMethod, "GET")
+        XCTAssertEqual(seen?.url?.path, "/game/abc/review")
+        XCTAssertEqual(review.moments.first?.ply, 6)
+    }
+
+    func testExplainStreamsLikeAsk() async throws {
+        var seen: URLRequest?
+        StubProtocol.handler = { request in
+            seen = request
+            return (200, Data("{\"type\":\"sentence\",\"text\":\"The queen was undefended.\"}\n{\"type\":\"done\"}\n".utf8))
+        }
+        var events: [AskEvent] = []
+        for try await event in makeClient().explain(gameID: "abc", ply: 6) { events.append(event) }
+        XCTAssertEqual(events, [.sentence("The queen was undefended."), .done])
+        XCTAssertEqual(seen?.httpMethod, "POST")
+        XCTAssertEqual(seen?.url?.path, "/game/abc/review/6/explain")
+        XCTAssertEqual(seen?.value(forHTTPHeaderField: "Accept"), "application/x-ndjson")
+    }
+
+    func testExplainUnknownPlyIs404() async {
+        StubProtocol.handler = { _ in (404, Data(#"{"detail":"No such move"}"#.utf8)) }
+        do {
+            for try await _ in makeClient().explain(gameID: "abc", ply: 99) {}
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error as? APIError, .server(status: 404, detail: "No such move"))
+        }
+    }
+
+    func testDecodesAndFetchesLogSummary() async throws {
+        let json = """
+        {"illegal_attempts":3,"lookups":9,"by_piece":{"knight":4,"bishop":2},"by_square":{"e5":3},
+         "spoken":"You asked about the board 9 times and tried 3 illegal moves, mostly with the knight.",
+         "recent":[{"time":"2026-10-18T19:10:00Z","kind":"lookup","detail":"where is knight","game":"abc"}]}
+        """
+        var seen: URLRequest?
+        StubProtocol.handler = { request in
+            seen = request
+            return (200, Data(json.utf8))
+        }
+        let summary = try await makeClient().logSummary()
+        XCTAssertEqual(seen?.httpMethod, "GET")
+        XCTAssertEqual(seen?.url?.path, "/log/summary")
+        XCTAssertEqual(summary.illegalAttempts, 3)
+        XCTAssertEqual(summary.lookups, 9)
+        XCTAssertEqual(summary.byPiece, ["knight": 4, "bishop": 2])
+        XCTAssertEqual(summary.bySquare, ["e5": 3])
+        XCTAssertEqual(summary.spoken, "You asked about the board 9 times and tried 3 illegal moves, mostly with the knight.")
+        XCTAssertEqual(summary.recent, [LogEntry(time: "2026-10-18T19:10:00Z", kind: "lookup", detail: "where is knight", game: "abc")])
     }
 }
