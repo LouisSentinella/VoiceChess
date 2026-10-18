@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 from contextlib import asynccontextmanager
@@ -10,11 +11,14 @@ from typing import Literal
 
 import chess
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import spoken
+from . import coach, qa, spoken
+from .analysis import Analyzer
 from .engines import EngineConfig, EngineError, EnginePool
 from .game import Game, MoveError, OpponentSpec
+from .llm import LlmClient, backends_from_env
 from .tts import MAX_TEXT, Tts, TtsError
 
 
@@ -27,6 +31,10 @@ class NewGame(BaseModel):
 
 class MoveRequest(BaseModel):
     move: str  # SAN ("Nf3", "O-O") or UCI ("g1f3")
+
+
+class AskRequest(BaseModel):
+    question: str
 
 
 class TtsRequest(BaseModel):
@@ -71,13 +79,38 @@ async def lifespan(app: FastAPI):
     app.state.tts = Tts(
         config.tts_model, config.tts_voices, os.environ.get("VOICECHESS_TTS_VOICE", "af_heart")
     )
+    app.state.analyzer = Analyzer(config.stockfish)
+    app.state.llm = LlmClient(backends_from_env())
+    app.state.background = set()
     warm = asyncio.create_task(app.state.tts.warm())  # first phrase should not pay the model load
     yield
     warm.cancel()
+    for task in list(app.state.background):
+        task.cancel()
     await app.state.pool.close()
+    await app.state.analyzer.close()
+    await app.state.llm.close()
 
 
 app = FastAPI(title="Voice Chess Coach server", lifespan=lifespan)
+
+
+def _warm(game: Game) -> None:
+    """Analyse the current position in the background so a later question finds it cached."""
+    analyzer: Analyzer = app.state.analyzer
+    if not analyzer.available():
+        return
+    board = game.board.copy(stack=False)
+
+    async def run() -> None:
+        try:
+            await analyzer.lines(board, 3)
+        except Exception:  # noqa: BLE001 - best-effort cache fill
+            pass
+
+    task = asyncio.create_task(run())
+    app.state.background.add(task)
+    task.add_done_callback(app.state.background.discard)
 
 
 async def _bot_move(game: Game) -> dict:
@@ -85,6 +118,7 @@ async def _bot_move(game: Game) -> dict:
     move = await app.state.pool.choose_move(game.opponent, game.board)
     described = game.describe_move(move)
     game.board.push(move)
+    _warm(game)
     return described
 
 
@@ -123,6 +157,7 @@ async def _play(game: Game, move: chess.Move) -> dict:
     """Play the player's move, then the bot's reply. Caller holds the game lock."""
     player_move = game.describe_move(move)
     game.play(move)
+    _warm(game)  # analyse the position the bot is about to move from, in the background
 
     bot_move = None
     if not game.is_over():
@@ -156,6 +191,8 @@ def _candidate(game: Game, move: chess.Move) -> dict:
 async def say(game_id: str, req: SayRequest):
     """Resolve a speech transcript. Misses are normal outcomes, so always HTTP 200."""
     game = app.state.games.get(game_id)
+    if qa.is_question(req.transcript):  # before move parsing: "what is on e4" must never play e4
+        return {"status": "question", "question": req.transcript.strip()}
     async with app.state.games.locks[game_id]:
         _check_turn(game)
         r = game.resolve_speech(req.transcript)
@@ -174,6 +211,23 @@ async def say(game_id: str, req: SayRequest):
                 "message": spoken.confirm_message(game.board, r.move),
             }
         return {"status": "played", **await _play(game, r.move)}
+
+
+@app.post("/game/{game_id}/ask")
+async def ask(game_id: str, req: AskRequest):
+    """Answer a question about the game as an NDJSON stream of spoken sentences."""
+    game = app.state.games.get(game_id)
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(422, "Empty question.")
+
+    async def events():
+        # Held for the whole answer: the position must not change under the model.
+        async with app.state.games.locks[game_id]:
+            async for event in coach.answer(game, question, app.state.analyzer, app.state.llm):
+                yield json.dumps(event) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
 @app.get("/game/{game_id}/hints")

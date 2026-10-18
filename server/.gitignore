@@ -5,3 +5,4 @@ engines/src/
 __pycache__/
 .pytest_cache/
 engines/tts/
+engines/llm/

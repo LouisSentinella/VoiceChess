@@ -591,13 +591,13 @@ source = { editable = "." }
 dependencies = [
     { name = "chess" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "kokoro-onnx" },
     { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -606,13 +606,13 @@ dev = [
 requires-dist = [
     { name = "chess", specifier = ">=1.11" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "kokoro-onnx", specifier = ">=0.6.1" },
     { name = "uvicorn", specifier = ">=0.32" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
 ]

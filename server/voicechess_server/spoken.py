@@ -368,3 +368,36 @@ def resolve(board: chess.Board, transcript: str, pending: list[chess.Move]) -> R
         if len(fuzzy) > 1:
             return Resolution("ambiguous", candidates=fuzzy, message=_ask(board, fuzzy))
     return NO_MATCH
+
+
+# ------------------------------------------------- moves inside free text
+
+_SAN_IN_TEXT = re.compile(
+    r"\b(?P<castle>O-O-O|0-0-0|O-O|0-0)(?P<ccheck>[+#])?(?!\w)"
+    r"|\b(?P<piece>[NBRQK])(?P<origin>[a-h]?[1-8]?)(?P<cap>x)?(?P<dest>[a-h][1-8])(?:=(?P<promo>[NBRQ]))?(?P<check>[+#])?(?!\w)"
+    r"|\b(?P<pfile>[a-h])x(?P<pdest>[a-h][1-8])(?:=(?P<ppromo>[NBRQ]))?(?P<pcheck>[+#])?(?!\w)"
+)
+_LETTER_NAME = {"N": "knight", "B": "bishop", "R": "rook", "Q": "queen", "K": "king"}
+
+
+def _check_word(mark: str | None) -> str:
+    return {"+": ", check", "#": ", checkmate"}.get(mark or "", "")
+
+
+def san_to_speech(text: str) -> str:
+    """Rewrite SAN move tokens in free text the way speak_move announces them."""
+
+    def repl(m: re.Match) -> str:
+        if m.group("castle"):
+            side = "queenside" if m.group("castle").count("-") == 2 else "kingside"
+            return f"castles {side}{_check_word(m.group('ccheck'))}"
+        if m.group("piece"):
+            origin = f" {m.group('origin')}" if m.group("origin") else ""
+            promo = f", promotes to {_LETTER_NAME[m.group('promo')]}" if m.group("promo") else ""
+            verb = "takes" if m.group("cap") else "to"
+            return (f"{_LETTER_NAME[m.group('piece')]}{origin} {verb} {m.group('dest')}"
+                    f"{promo}{_check_word(m.group('check'))}")
+        promo = f", promotes to {_LETTER_NAME[m.group('ppromo')]}" if m.group("ppromo") else ""
+        return f"pawn {m.group('pfile')} takes {m.group('pdest')}{promo}{_check_word(m.group('pcheck'))}"
+
+    return _SAN_IN_TEXT.sub(repl, text)

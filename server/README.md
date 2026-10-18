@@ -27,6 +27,7 @@ Games live in memory, keyed by the id from `POST /game`.
 | `POST /game/{id}/say` | `{"transcript": "knight to f three", "confirm": false}` | played, confirm, ambiguous or no_match; see `docs/api.md` |
 | `POST /tts` | `{"text": "Knight to f3", "voice": "af_heart", "speed": 1.0}` | 24 kHz mono WAV (Kokoro, about 0.4 s per phrase on CPU, cached); 503 if the model is missing |
 | `GET /tts/voices` | | `{voices, default}`; default voice from `VOICECHESS_TTS_VOICE` |
+| `POST /game/{id}/ask` | `{"question": "why was that a mistake"}` | NDJSON stream of spoken sentences, see `docs/api.md` |
 | `DELETE /game/{id}` | | 204 |
 
 - Maia `level`: 1100 to 1900 in steps of 100, run with `go nodes 1` (no search). It is deterministic: the same moves get the same replies.
@@ -39,3 +40,22 @@ Games live in memory, keyed by the id from `POST /game`.
 id=$(curl -s -XPOST localhost:8765/game -H 'content-type: application/json' -d '{}' | jq -r .state.id)
 curl -s -XPOST localhost:8765/game/$id/move -H 'content-type: application/json' -d '{"move":"e4"}'
 ```
+
+## Coach (questions)
+
+`/say` returns `{"status": "question"}` for transcripts that start with a question word, before any move parsing ("what is on e4" never plays e4). The app then calls `/ask`:
+
+- Board questions (what is on / attacking / defending a square, where is my knight, last moves, material) are answered from the position directly, with no model.
+- Everything else goes to a language model. It is given only facts computed here: FEN-derived piece lists, loose pieces, material, Stockfish's top 3 lines, and an engine assessment of the last two moves (loss in pawns, better move). The model only talks; it never decides a move.
+- Answers stream sentence by sentence. SAN in the text is rewritten to spoken form.
+
+Language model backends are OpenAI-compatible and tried in order until one streams:
+
+| Setting | Meaning |
+| --- | --- |
+| `VOICECHESS_LLM` | ordered list of `openrouter` and `local`; default `openrouter,local` if a key exists, else `local` |
+| `OPENROUTER_API_KEY` | hosted backend key |
+| `VOICECHESS_LLM_MODEL` | hosted model, default `anthropic/claude-haiku-5.5` |
+| `VOICECHESS_LOCAL_LLM_URL` | local llama.cpp or Ollama server, default `http://127.0.0.1:8081/v1` |
+
+Put keys in `~/.config/voicechess/env` (read by the systemd unit), never in git. The local model runs with `systemctl --user start voicechess-llm` (not enabled at boot: it holds about 4 GB of VRAM while running).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs Stockfish, lc0 (CPU, Eigen backend), Maia weights and Kokoro TTS into ./engines.
+# Installs Stockfish, lc0 (CPU, Eigen backend), Maia weights, Kokoro TTS and the local coach LLM into ./engines.
 # Everything stays inside this directory; no root needed.
 # Needs: gh (logged in), git, gcc/g++, ninja, uv.
 set -euo pipefail
@@ -32,6 +32,11 @@ mkdir -p tts
 for f in kokoro-v1.0.onnx voices-v1.0.bin; do
   [ -f "tts/$f" ] || gh release download model-files-v1.0 -R thewh1teagle/kokoro-onnx -p "$f" -D tts
 done
+
+# Local fallback language model for the coach (llama.cpp serves it; 4-bit 4B fits the 3070 Ti with room to spare).
+mkdir -p llm
+[ -f llm/Qwen3-4B-Instruct-2507-Q4_K_M.gguf ] || curl -L -sS -o llm/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+  https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
 
 if [ ! -x bin/lc0 ]; then
   # Release tarballs omit the proto submodule, so clone.

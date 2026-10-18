@@ -61,6 +61,8 @@ class Game:
     # Moves offered by the last "did you mean" question; the next transcript is
     # matched against these first.
     pending: list[chess.Move] = field(default_factory=list)
+    # Recent (question, answer) pairs for the coach, so follow-ups make sense.
+    chat: list[tuple[str, str]] = field(default_factory=list)
 
     @staticmethod
     def new_id() -> str:
