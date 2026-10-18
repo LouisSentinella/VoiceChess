@@ -21,6 +21,8 @@ targets:
       path: Config/Info.plist
       properties:
         CFBundleDisplayName: Voice Chess
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
