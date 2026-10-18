@@ -84,6 +84,39 @@ async def _lines(analyzer: Analyzer | None, board: chess.Board, multipv: int) ->
         return []
 
 
+def _move_words(parent: chess.Board, after: chess.Board, move: chess.Move, game: Game) -> str:
+    """Plain-words description of a move: from/to squares, what it captured, check, and whether the
+    moved piece can be taken, so the model never has to infer any of it from SAN."""
+    mover = parent.turn
+    mine = mover == game.player  # the listener moved
+    if parent.is_castling(move):
+        words = f"castled {'kingside' if parent.is_kingside_castling(move) else 'queenside'}"
+    else:
+        piece = chess.piece_name(parent.piece_type_at(move.from_square))
+        words = f"the {piece} moved from {chess.square_name(move.from_square)} to {chess.square_name(move.to_square)}"
+        captured = (chess.Piece(chess.PAWN, not mover) if parent.is_en_passant(move)
+                    else parent.piece_at(move.to_square))
+        if captured:
+            owner = "my" if mine else "your"
+            words += f", capturing {owner} {chess.piece_name(captured.piece_type)} ({VALUES.get(captured.piece_type, 0)} points)"
+        if move.promotion:
+            words += f", promoting to a {chess.piece_name(move.promotion)}"
+        attackers = after.attackers(not mover, move.to_square)
+        if attackers and not after.is_checkmate():
+            cheapest = chess.piece_name(min((after.piece_type_at(a) for a in attackers), key=lambda t: VALUES.get(t, 100)))
+            defended = bool(after.attackers(mover, move.to_square))
+            words += f"; the moved piece can be captured by a {cheapest} and is {'defended' if defended else 'not defended'}"
+    if after.is_checkmate():
+        words += ", giving checkmate"
+    elif after.is_check():
+        words += ", giving check"
+    delta = (_material(after, game.player) - _material(after, not game.player)) - (
+        _material(parent, game.player) - _material(parent, not game.player))
+    if delta:
+        words += f". Material change for you: {'+' if delta > 0 else '-'}{abs(delta)} points"
+    return words
+
+
 async def _assess_last_moves(game: Game, analyzer: Analyzer | None, plies: int = 2) -> list[str]:
     out = []
     child = game.board.copy()
@@ -108,9 +141,7 @@ async def _assess_last_moves(game: Game, analyzer: Analyzer | None, plies: int =
         loss = max(0, before_cp - after_cp)
         who = "you" if mover == game.player else "I"
         played = parent.san(move)
-        captured = parent.piece_at(move.to_square) if not parent.is_en_passant(move) else chess.Piece(chess.PAWN, not mover)
-        takes = f", capturing {'your' if mover != game.player else 'my'} {chess.piece_name(captured.piece_type)}" if captured else ""
-        line = f"- {who} played {played}{takes}: {move_label(loss)}"
+        line = f"- {who} played {played}: {_move_words(parent, after, move, game)}. Engine verdict: {move_label(loss)}"
         if move != best.first:
             listener = lambda cp: eval_words(cp if game.player == mover else -cp)  # noqa: E731
             line += (f". The engine preferred {parent.san(best.first)} "

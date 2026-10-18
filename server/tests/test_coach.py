@@ -73,6 +73,11 @@ async def test_sentences_stream_as_complete_and_speak_moves_in_words():
     assert out == ["You could play knight to f3 to develop.", "That also hits e5!", "Castle soon after."]
 
 
+async def test_a_move_number_is_not_a_sentence_end():
+    out = await collect(coach.sentences(tokens("You fell for a trap after 2. dxe5, and then lost your queen. Sorry.")))
+    assert out == ["You fell for a trap after 2. pawn d takes e5, and then lost your queen.", "Sorry."]
+
+
 async def test_sentences_do_not_split_on_decimals_or_short_fragments_and_strip_markdown():
     out = await collect(coach.sentences(tokens("**You** are up 1.5 pawns. 1. e4 was fine.")))
     assert out == ["You are up 1.5 pawns.", "1. e4 was fine."]
@@ -124,7 +129,8 @@ async def test_facts_flag_a_blunder_with_the_better_move():
         g.board.fen(): (chess.Move.from_uci("h5f7"), 300),  # after ...Nc6 White is +3.0
     }
     facts = await build_facts(g, FakeAnalyzer(scripted))
-    assert "I played Nc6: a blunder" in facts
+    assert "I played Nc6: the knight moved from b8 to c6" in facts
+    assert "Engine verdict: a blunder" in facts
     assert "The engine preferred Nf6" in facts
     assert "Moves so far: 1. e4 e5 2. Qh5 Nc6" in facts
     assert "Your pieces:" in facts and "My pieces:" in facts
@@ -286,3 +292,17 @@ async def test_retries_without_the_reasoning_override_when_the_model_insists_on_
     )
     assert "".join([c async for c in llm.stream([])]) == "ok"
     assert ["reasoning" in b for b in bodies] == [True, False]
+
+
+async def test_facts_describe_a_capture_in_plain_words_with_origin_and_material():
+    g = game("d4 e5 dxe5 Qg5 Bxg5", player=chess.BLACK)
+    facts = await build_facts(g, None)
+    # No analyzer: the assessment is skipped, so check the helper directly on the last move.
+    from voicechess_server.facts import _move_words
+    before = g.board.copy()
+    move = before.pop()
+    after = g.board.copy()
+    words = _move_words(before, after, move, g)
+    assert words.startswith("the bishop moved from c1 to g5, capturing your queen (9 points)")
+    assert "Material change for you: -9 points" in words
+    assert "Pieces captured so far" in facts

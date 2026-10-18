@@ -31,24 +31,37 @@ DEFAULT_MODELS = [
     "anthropic/claude-sonnet-5.5",  # quality ceiling
 ]
 
-# (name, moves played by white and black alternately, questions). The listener is White.
+# (name, moves played by white and black alternately, questions, listener colour).
 SCENARIOS = [
     (
         "Hung the queen",
         "e4 e5 Qh5 Nc6 Qxf7+ Kxf7",
         ["why was that a mistake", "what should I do now", "am I winning"],
+        chess.WHITE,
     ),
     (
         "Fried Liver chance",
         "e4 e5 Nf3 Nc6 Bc4 Nf6 Ng5 d5 exd5 Nxd5",
         ["what is my best move here", "what should I be worried about", "why does that work"],
+        chess.WHITE,
     ),
     (
         "Quiet opening",
         "d4 d5 c4 e6 Nc3 Nf6",
         ["what is my plan", "is my position okay"],
+        chess.WHITE,
+    ),
+    (
+        "Bishop takes queen (listener is Black)",
+        "d4 e5 dxe5 Qg5 Bxg5",
+        ["why was that a mistake", "what happened", "what should I do now"],
+        chess.BLACK,
     ),
 ]
+
+
+def only(names: list[str]) -> list:
+    return [sc for sc in SCENARIOS if not names or any(n.lower() in sc[0].lower() for n in names)]
 
 
 def load_key() -> str:
@@ -62,13 +75,13 @@ def load_key() -> str:
     sys.exit("No OPENROUTER_API_KEY in the environment or ~/.config/voicechess/env")
 
 
-async def main(models: list[str]) -> None:
+async def main(models: list[str], scenarios=None) -> None:
     key = load_key()
     stockfish = Path(__file__).resolve().parent.parent / "engines" / "bin" / "stockfish"
     analyzer = Analyzer(stockfish)
     try:
-        for title, moves, questions in SCENARIOS:
-            game = Game("cmp", chess.WHITE, OpponentSpec("maia", 1500))
+        for title, moves, questions, side in (scenarios or SCENARIOS):
+            game = Game("cmp", side, OpponentSpec("maia", 1500))
             for san in moves.split():
                 game.board.push_san(san)
             facts = await build_facts(game, analyzer)
@@ -100,4 +113,9 @@ async def main(models: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1:] or DEFAULT_MODELS))
+    # usage: compare_llms.py [--only "name fragment"] [model ...]
+    args = sys.argv[1:]
+    picked = None
+    if args[:1] == ["--only"]:
+        picked, args = only([args[1]]), args[2:]
+    asyncio.run(main(args or DEFAULT_MODELS, picked))

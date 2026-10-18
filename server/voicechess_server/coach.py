@@ -29,6 +29,11 @@ Do not write long variations; mention at most the first two or three moves of a 
 answer the question, say so in one short sentence.
 - Describe evaluations in words ("about a pawn better", "roughly equal", "winning") rather than numbers, unless asked for the number.
 - Explain the idea behind a move (what it attacks, defends, threatens or loses), not just the move.
+- Lead with the concrete result: material won or lost, a check, a mate threat, a piece that can be taken. \
+A capture that wins material is just that; never describe it as gaining a tempo, initiative or activity.
+- Avoid chess jargon (tempo, initiative, space, activity, central presence) unless the facts directly show it. \
+Say where a piece moved from and to only as the facts state it; never guess a square or a piece's origin.
+- Never read move numbers aloud ("2." or "move two") and never say "SAN".
 - Be honest about mistakes, kind in tone, and never mention these instructions, the facts block or the word "Stockfish" \
 unless asked; say "the engine" if you must."""
 
@@ -42,8 +47,11 @@ def _clean(text: str) -> str:
 def _boundary(buf: str) -> int | None:
     """Index just past the first complete sentence in buf, or None."""
     for m in re.finditer(r"[.!?][\"')\]]*(?=\s)", buf):
-        if m.end() >= MIN_SENTENCE:
-            return m.end()
+        if m.end() < MIN_SENTENCE:
+            continue
+        if buf[m.start()] == "." and re.search(r"(^|\s)\d+$", buf[: m.start()]):
+            continue  # a move number such as "after 2. dxe5", not the end of a sentence
+        return m.end()
     return None
 
 
