@@ -49,6 +49,8 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegat
     private let log: DebugLog
     /// WAV data keyed by server voice and text.
     private var cache: [String: Data] = [:]
+    /// Server audio requests that have not finished, by cache key.
+    private var inflight: [String: Task<Data?, Never>] = [:]
     private var utterance: AVSpeechUtterance?
     private var player: AVAudioPlayer?
     private var continuation: CheckedContinuation<Void, Never>?
@@ -75,9 +77,13 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegat
         busy = true
         defer { if generation == id { busy = false } }
 
-        if settings.serverVoiceEnabled, let wav = await serverAudio(for: text) {
-            guard generation == id, !Task.isCancelled else { return }
-            if await play(wav, text: text) { return }
+        if settings.serverVoiceEnabled {
+            if let wav = await serverAudio(for: text) {
+                guard generation == id, !Task.isCancelled else { return }
+                if await play(wav, text: text) { return }
+            } else {
+                log.log("TTS: using on-device voice")
+            }
         }
         guard generation == id, !Task.isCancelled else { return }
         await speakLocally(text)
@@ -102,13 +108,39 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegat
         "\(settings.serverVoice)|\(text)"
     }
 
+    /// Starts fetching `text` from the server voice without playing it, so that a later `say` of the
+    /// same text finds it cached (or joins the request still running). Failures are only logged;
+    /// `say` then retries and falls back to the on-device voice.
+    func prefetch(_ text: String) {
+        guard settings.serverVoiceEnabled, cache[cacheKey(text)] == nil else { return }
+        _ = startFetch(text)
+    }
+
     private func serverAudio(for text: String) async -> Data? {
-        let voice = settings.serverVoice
-        let name = voice.isEmpty ? "server default" : voice
         if let hit = cache[cacheKey(text)] {
-            log.log("TTS server voice \(name): cache hit")
+            log.log("TTS server voice \(voiceName): cache hit")
             return hit
         }
+        return await startFetch(text).value
+    }
+
+    /// The request for `text`, shared with any `prefetch` or `say` already running for it.
+    private func startFetch(_ text: String) -> Task<Data?, Never> {
+        let key = cacheKey(text)
+        if let running = inflight[key] { return running }
+        let voice = settings.serverVoice
+        let task = Task { await self.fetchServerAudio(text, voice: voice, key: key) }
+        inflight[key] = task
+        return task
+    }
+
+    private var voiceName: String {
+        settings.serverVoice.isEmpty ? "server default" : settings.serverVoice
+    }
+
+    private func fetchServerAudio(_ text: String, voice: String, key: String) async -> Data? {
+        defer { inflight[key] = nil }
+        let name = voice.isEmpty ? "server default" : voice
         let started = Date()
         func elapsed() -> Int { Int(Date().timeIntervalSince(started) * 1000) }
         do {
@@ -117,10 +149,10 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegat
             guard !data.isEmpty else { throw APIError.invalidResponse("empty audio") }
             log.log("TTS server voice \(name): \(elapsed()) ms, \(data.count / 1024) KB")
             if cache.count >= Self.cacheLimit { cache.removeAll() }
-            cache[cacheKey(text)] = data
+            cache[key] = data
             return data
         } catch {
-            log.log("TTS server voice failed after \(elapsed()) ms (\(error.localizedDescription)); using on-device voice")
+            log.log("TTS server voice \(name) failed after \(elapsed()) ms (\(error.localizedDescription))")
             return nil
         }
     }

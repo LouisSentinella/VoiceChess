@@ -30,11 +30,12 @@ struct SettingsView: View {
                 Section {
                     Toggle("Auto-listen", isOn: $settings.autoListen)
                     Toggle("Confirm before playing", isOn: $settings.confirmBeforePlay)
+                    Toggle("Ask the coach", isOn: $settings.askCoach)
                     Toggle("Keep screen awake", isOn: $settings.keepAwake)
                 } header: {
                     Text("Play")
                 } footer: {
-                    Text("Auto-listen listens again after every move until the game ends or you tap Pause. It pauses when the app goes to the background or audio is interrupted. With it off, use the Listen button for each move.")
+                    Text("Auto-listen listens again after every move until you tap Pause, and keeps listening for questions after the game ends. It pauses when the app goes to the background or audio is interrupted. With it off, use the Listen button for each move. Ask the coach sends questions such as \"why was that a mistake\" to the server and speaks the answer.")
                 }
 
                 Section {

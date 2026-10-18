@@ -51,6 +51,11 @@ final class ModelTests: XCTestCase {
             try decodeSay(#"{"status":"no_match","message":"I did not catch a legal move."}"#),
             .noMatch(message: "I did not catch a legal move."))
 
+        XCTAssertEqual(
+            try decodeSay(#"{"status":"question","question":"why was that a mistake"}"#),
+            .question("why was that a mistake"))
+        XCTAssertThrowsError(try decodeSay(#"{"status":"question"}"#))
+
         XCTAssertThrowsError(try decodeSay(#"{"status":"bogus"}"#))
     }
 
@@ -150,6 +155,14 @@ final class PhraseTests: XCTestCase {
         XCTAssertEqual(VoiceCommand.parse("Repeat"), .repeatLast)
         XCTAssertEqual(VoiceCommand.parse("new game"), .newGame)
         XCTAssertNil(VoiceCommand.parse("knight to f three"))
+        XCTAssertEqual(VoiceCommand.parse("Stop"), .stop)
+        XCTAssertEqual(VoiceCommand.parse("be quiet please"), .stop)
+        XCTAssertEqual(VoiceCommand.parse("Cancel."), .stop)
+        XCTAssertEqual(VoiceCommand.parse("stop talking"), .stop)
+        // Anything longer is left to the server's question handling.
+        XCTAssertNil(VoiceCommand.parse("how do I stop the attack"))
+        XCTAssertNil(VoiceCommand.parse("explain"))
+        XCTAssertNil(VoiceCommand.parse("analyse the position"))
     }
 }
 
@@ -331,5 +344,113 @@ final class TTSClientTests: XCTestCase {
         StubProtocol.handler = { _ in (200, Data(#"{"voices":["af_heart","bf_emma"],"default":"af_heart"}"#.utf8)) }
         let voices = try await makeClient().ttsVoices()
         XCTAssertEqual(voices, TTSVoices(voices: ["af_heart", "bf_emma"], defaultVoice: "af_heart"))
+    }
+}
+
+final class AskEventDecoderTests: XCTestCase {
+    func testDecodesEvents() throws {
+        XCTAssertEqual(
+            try AskEventDecoder.decode(line: #"{"type":"sentence","text":"Your knight is attacked."}"#),
+            .sentence("Your knight is attacked."))
+        XCTAssertEqual(try AskEventDecoder.decode(line: #"{"type":"done"}"#), .done)
+        XCTAssertEqual(
+            try AskEventDecoder.decode(line: #"{"type":"error","message":"I can't reach the language model right now."}"#),
+            .error("I can't reach the language model right now."))
+        XCTAssertEqual(try AskEventDecoder.decode(line: #"  {"type":"done"}  "#), .done)
+        XCTAssertEqual(try AskEventDecoder.decode(line: #"{"type":"sentence","text":"Caf\u00e9 "}"#), .sentence("Café"))
+    }
+
+    func testSkipsLinesWithoutEvents() throws {
+        XCTAssertNil(try AskEventDecoder.decode(line: ""))
+        XCTAssertNil(try AskEventDecoder.decode(line: "  \t "))
+        XCTAssertNil(try AskEventDecoder.decode(line: #"{"type":"thinking","progress":0.5}"#))
+        XCTAssertNil(try AskEventDecoder.decode(line: #"{"type":"sentence","text":"   "}"#))
+    }
+
+    func testMalformedLinesThrow() {
+        for line in ["not json", #"{"type":"sentence""#, #"{"text":"no type"}"#, #"{"type":"sentence"}"#, #"{"type":"error"}"#, "[1,2]"] {
+            XCTAssertThrowsError(try AskEventDecoder.decode(line: line), line) { error in
+                guard case APIError.invalidResponse = error else { return XCTFail("wrong error for \(line): \(error)") }
+            }
+        }
+    }
+}
+
+final class AskClientTests: XCTestCase {
+    private func makeClient() -> APIClient {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        return APIClient(baseURL: URL(string: "http://example.test")!, session: URLSession(configuration: config))
+    }
+
+    private func collect(_ stream: AsyncThrowingStream<AskEvent, Error>) async throws -> [AskEvent] {
+        var events: [AskEvent] = []
+        for try await event in stream { events.append(event) }
+        return events
+    }
+
+    func testStreamsEventsAndSkipsNoise() async throws {
+        var seen: URLRequest?
+        let body = """
+        {"type":"sentence","text":"Your knight on f3 is attacked by the pawn on e4."}
+
+        {"type":"future","x":1}
+        {"type":"sentence","text":"Move it or defend it."}
+        {"type":"done"}
+        {"type":"sentence","text":"ignored after done"}
+        """
+        StubProtocol.handler = { request in
+            seen = request
+            return (200, Data(body.utf8))
+        }
+        let events = try await collect(makeClient().ask(gameID: "abc", question: "what is attacking e5"))
+        XCTAssertEqual(events, [
+            .sentence("Your knight on f3 is attacked by the pawn on e4."),
+            .sentence("Move it or defend it."),
+            .done,
+        ])
+        XCTAssertEqual(seen?.httpMethod, "POST")
+        XCTAssertEqual(seen?.url?.path, "/game/abc/ask")
+        XCTAssertEqual(seen?.value(forHTTPHeaderField: "Accept"), "application/x-ndjson")
+    }
+
+    func testErrorEventEndsTheStream() async throws {
+        StubProtocol.handler = { _ in
+            (200, Data("{\"type\":\"error\",\"message\":\"I can't reach the language model right now.\"}\n".utf8))
+        }
+        let events = try await collect(makeClient().ask(gameID: "abc", question: "why"))
+        XCTAssertEqual(events, [.error("I can't reach the language model right now.")])
+    }
+
+    func testStreamEndingBeforeDoneThrowsAfterDeliveringSentences() async {
+        StubProtocol.handler = { _ in (200, Data("{\"type\":\"sentence\",\"text\":\"First.\"}\n".utf8)) }
+        var events: [AskEvent] = []
+        do {
+            for try await event in makeClient().ask(gameID: "abc", question: "why") { events.append(event) }
+            XCTFail("expected an error")
+        } catch {
+            guard case APIError.invalidResponse = error else { return XCTFail("wrong error: \(error)") }
+        }
+        XCTAssertEqual(events, [.sentence("First.")])
+    }
+
+    func testMalformedLineThrows() async {
+        StubProtocol.handler = { _ in (200, Data("{\"type\":\"sentence\",\"text\":\"First.\"}\nnot json\n".utf8)) }
+        do {
+            _ = try await collect(makeClient().ask(gameID: "abc", question: "why"))
+            XCTFail("expected an error")
+        } catch {
+            guard case APIError.invalidResponse = error else { return XCTFail("wrong error: \(error)") }
+        }
+    }
+
+    func testHTTPErrorCarriesDetail() async {
+        StubProtocol.handler = { _ in (404, Data(#"{"detail":"Unknown game"}"#.utf8)) }
+        do {
+            _ = try await collect(makeClient().ask(gameID: "abc", question: "why"))
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error as? APIError, .server(status: 404, detail: "Unknown game"))
+        }
     }
 }

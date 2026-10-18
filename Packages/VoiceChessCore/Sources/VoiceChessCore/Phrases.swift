@@ -41,9 +41,16 @@ public enum VoiceCommand: Equatable, Sendable {
     case readMyPieces
     case repeatLast
     case newGame
+    /// Stop talking. Matches only the whole utterance, so questions such as "how do I stop the attack"
+    /// still reach the server.
+    case stop
+
+    private static let stopPhrases: Set<String> = ["stop", "stop talking", "be quiet", "cancel"]
 
     public static func parse(_ text: String) -> VoiceCommand? {
-        let phrase = " " + normalizeSpeech(text).joined(separator: " ") + " "
+        let words = normalizeSpeech(text)
+        if stopPhrases.contains(words.filter { $0 != "please" }.joined(separator: " ")) { return .stop }
+        let phrase = " " + words.joined(separator: " ") + " "
         func has(_ needle: String) -> Bool { phrase.contains(" \(needle) ") }
         if has("read my pieces") || has("read my piece") { return .readMyPieces }
         if has("read the board") || has("read board") { return .readBoard }

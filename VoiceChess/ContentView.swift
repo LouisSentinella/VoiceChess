@@ -20,6 +20,7 @@ struct ContentView: View {
             header
             board
             movesLine
+            if !controller.coachQuestion.isEmpty { coachBox }
             statusLine
             transcriptBox
             lastMoves
@@ -95,6 +96,39 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // MARK: Coach
+
+    private static let coachEnd = "coachEnd"
+
+    /// The last question and the answer as it streams in. Fixed height and scrollable, so a long
+    /// answer never pushes the board or the big button off a small screen.
+    private var coachBox: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Coach").font(.caption.bold()).foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\u{201C}\(controller.coachQuestion)\u{201D}")
+                            .font(.footnote.italic())
+                            .foregroundStyle(.secondary)
+                        Text(controller.coachAnswer.isEmpty ? "..." : controller.coachAnswer)
+                            .font(.callout)
+                        Color.clear.frame(height: 1).id(Self.coachEnd)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                }
+                .onChange(of: controller.coachAnswer) { _, _ in
+                    withAnimation { proxy.scrollTo(Self.coachEnd, anchor: .bottom) }
+                }
+            }
+            .frame(height: 64)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    }
+
     // MARK: Status
 
     private var statusLine: some View {
@@ -153,9 +187,10 @@ struct ContentView: View {
 
     // MARK: Talk button
 
-    private enum ButtonMode { case pause, done, thinking, listen }
+    private enum ButtonMode { case stop, pause, done, thinking, listen }
 
     private var buttonMode: ButtonMode {
+        if controller.answering { return .stop }
         if controller.autoListening { return .pause }
         switch controller.status {
         case .listening: return .done
@@ -184,6 +219,7 @@ struct ContentView: View {
 
     private func icon(_ mode: ButtonMode) -> String {
         switch mode {
+        case .stop: return "speaker.slash.fill"
         case .pause: return "pause.circle.fill"
         case .done: return "stop.circle.fill"
         case .thinking: return "hourglass"
@@ -193,6 +229,7 @@ struct ContentView: View {
 
     private func label(_ mode: ButtonMode) -> String {
         switch mode {
+        case .stop: return "Stop"
         case .pause: return "Pause"
         case .done: return "Done"
         case .thinking: return "Thinking"
@@ -202,6 +239,7 @@ struct ContentView: View {
 
     private func color(_ mode: ButtonMode) -> Color {
         switch mode {
+        case .stop: return .indigo
         case .pause: return .orange
         case .done: return .red
         case .thinking: return .gray

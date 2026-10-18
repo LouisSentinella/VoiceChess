@@ -83,6 +83,23 @@ public struct APIClient: Sendable {
         try await request("GET", "tts/voices")
     }
 
+    /// Streams the coach's answer to `question` (docs/api.md "/ask stream"). The stream finishes after
+    /// `.done` or `.error`, and throws if the request fails or the connection ends before either.
+    /// Terminating the stream cancels the request. Logs the start, the first-sentence latency and the total.
+    public func ask(gameID: String, question: String) -> AsyncThrowingStream<AskEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try await streamAsk(gameID: gameID, question: question) { continuation.yield($0) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     // MARK: Transport
 
     private func request<T: Decodable>(_ method: String, _ path: String, body: Data? = nil) async throws -> T {
@@ -153,5 +170,73 @@ public struct APIClient: Sendable {
             return text
         }
         return "HTTP \(status)"
+    }
+
+    private func streamAsk(gameID: String, question: String, emit: (AskEvent) -> Void) async throws {
+        struct Body: Encodable { let question: String }
+        let path = "game/\(gameID)/ask"
+        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        req.httpBody = try JSONEncoder().encode(Body(question: question))
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/x-ndjson", forHTTPHeaderField: "Accept")
+
+        let started = Date()
+        func elapsed() -> String { "\(Int(Date().timeIntervalSince(started) * 1000)) ms" }
+        var sentences = 0
+        var finished = false
+        func handle(_ line: String) throws {
+            guard !finished, let event = try AskEventDecoder.decode(line: line) else { return }
+            switch event {
+            case .sentence:
+                sentences += 1
+                if sentences == 1 { log?("POST /\(path) first sentence after \(elapsed())") }
+            case .done, .error:
+                finished = true
+            }
+            emit(event)
+        }
+
+        log?("POST /\(path) started (\(question.count) characters)")
+        do {
+            #if canImport(FoundationNetworking)
+            // No streaming URLSession API on Linux: read the whole body, then split it into lines.
+            let (data, http) = try await fetch(req)
+            log?("POST /\(path) -> \(http.statusCode) after \(elapsed())")
+            guard (200..<300).contains(http.statusCode) else {
+                throw APIError.server(status: http.statusCode, detail: Self.detail(from: data, status: http.statusCode))
+            }
+            for line in String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline) {
+                try handle(String(line))
+            }
+            #else
+            let (bytes, response) = try await session.bytes(for: req)
+            guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse("not an HTTP response") }
+            log?("POST /\(path) -> \(http.statusCode) after \(elapsed())")
+            guard (200..<300).contains(http.statusCode) else {
+                var body = Data()
+                for try await byte in bytes {
+                    body.append(byte)
+                    if body.count >= 4096 { break }
+                }
+                throw APIError.server(status: http.statusCode, detail: Self.detail(from: body, status: http.statusCode))
+            }
+            for try await line in bytes.lines {
+                try handle(line)
+                if finished { break }
+            }
+            #endif
+            guard finished else { throw APIError.invalidResponse("stream ended before done") }
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                log?("POST /\(path) cancelled after \(elapsed()) (\(sentences) sentences)")
+                throw CancellationError()
+            }
+            log?("POST /\(path) failed after \(elapsed()) (\(sentences) sentences): \(error.localizedDescription)")
+            if let apiError = error as? APIError { throw apiError }
+            throw APIError.unreachable(error.localizedDescription)
+        }
+        log?("POST /\(path) finished: \(sentences) sentences in \(elapsed())")
     }
 }

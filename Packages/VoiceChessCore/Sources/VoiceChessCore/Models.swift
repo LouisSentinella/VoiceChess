@@ -90,9 +90,11 @@ public enum SayResponse: Equatable, Sendable, Decodable {
     case confirm(candidate: MoveCandidate, message: String)
     case ambiguous(message: String, candidates: [MoveCandidate])
     case noMatch(message: String)
+    /// The transcript was a question, not a move; nothing was played. Send it to `ask`.
+    case question(String)
 
     private enum CodingKeys: String, CodingKey {
-        case status, message, candidate, candidates
+        case status, message, candidate, candidates, question
         case playerMove = "player_move"
         case botMove = "bot_move"
         case state
@@ -117,6 +119,8 @@ public enum SayResponse: Equatable, Sendable, Decodable {
                 candidates: try c.decode([MoveCandidate].self, forKey: .candidates))
         case "no_match":
             self = .noMatch(message: try c.decode(String.self, forKey: .message))
+        case "question":
+            self = .question(try c.decode(String.self, forKey: .question))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .status, in: c, debugDescription: "Unknown say status '\(status)'")

@@ -12,6 +12,7 @@ final class AppSettings: ObservableObject {
         static let confirmBeforePlay = "confirmBeforePlay"
         static let legacyHandsFree = "handsFree"
         static let autoListen = "autoListen"
+        static let askCoach = "askCoach"
         static let serverVoiceEnabled = "serverVoiceEnabled"
         static let serverVoice = "serverVoice"
         static let localVoiceID = "localVoiceID"
@@ -29,6 +30,10 @@ final class AppSettings: ObservableObject {
     /// Listen again automatically after every move until the game ends or the user pauses.
     @Published var autoListen: Bool {
         didSet { UserDefaults.standard.set(autoListen, forKey: Key.autoListen) }
+    }
+    /// Send questions ("why was that a mistake") to the server's /ask endpoint and speak the answer.
+    @Published var askCoach: Bool {
+        didSet { UserDefaults.standard.set(askCoach, forKey: Key.askCoach) }
     }
     /// Speak through the server's /tts endpoint, falling back to the on-device voice.
     @Published var serverVoiceEnabled: Bool {
@@ -62,6 +67,7 @@ final class AppSettings: ObservableObject {
         // The old hands-free toggle is replaced by auto-listen, which starts ON for everyone.
         defaults.removeObject(forKey: Key.legacyHandsFree)
         autoListen = defaults.object(forKey: Key.autoListen) as? Bool ?? true
+        askCoach = defaults.object(forKey: Key.askCoach) as? Bool ?? true
         serverVoiceEnabled = defaults.object(forKey: Key.serverVoiceEnabled) as? Bool ?? true
         serverVoice = defaults.string(forKey: Key.serverVoice) ?? ""
         localVoiceID = defaults.string(forKey: Key.localVoiceID) ?? ""

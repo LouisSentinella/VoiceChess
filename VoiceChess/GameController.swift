@@ -33,6 +33,11 @@ final class GameController: ObservableObject {
     @Published private(set) var paused = false
     /// A listening/speaking flow is in progress.
     @Published private(set) var flowActive = false
+    /// The last question put to the coach and its answer as it streams in. Kept until the next move or question.
+    @Published private(set) var coachQuestion = ""
+    @Published private(set) var coachAnswer = ""
+    /// The coach is thinking about or speaking an answer; the big button then stops it.
+    @Published private(set) var answering = false
 
     private let audio: AudioSessionController
     private let speaker: Speaker
@@ -68,7 +73,7 @@ final class GameController: ObservableObject {
     func prepare() async {
         guard !prepared else { return }
         prepared = true
-        log.log("App started \(AppInfo.version), server \(settings.serverURL), auto-listen \(settings.autoListen), server voice \(settings.serverVoiceEnabled)")
+        log.log("App started \(AppInfo.version), server \(settings.serverURL), auto-listen \(settings.autoListen), server voice \(settings.serverVoiceEnabled), ask the coach \(settings.askCoach)")
         log.log("On-device recognition supported: \(listener.supportsOnDeviceRecognition)")
         let center = NotificationCenter.default
         center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main) { [weak self] _ in
@@ -129,8 +134,8 @@ final class GameController: ObservableObject {
             return
         }
         resumeWanted = false
-        guard settings.autoListen, !paused, game?.gameOver != true else {
-            log.log("Not resuming after \(reason): auto-listen \(settings.autoListen), paused \(paused), game over \(game?.gameOver == true)")
+        guard settings.autoListen, !paused else {
+            log.log("Not resuming after \(reason): auto-listen \(settings.autoListen), paused \(paused)")
             return
         }
         log.log("Auto-listen resuming after \(reason)")
@@ -147,6 +152,10 @@ final class GameController: ObservableObject {
 
     /// The big button: Pause while auto-listen runs; otherwise Listen (push-to-talk), or Done while listening.
     func primaryAction() {
+        if answering {
+            stopAnswer()
+            return
+        }
         if autoListening {
             pause("user tapped Pause")
             return
@@ -163,6 +172,14 @@ final class GameController: ObservableObject {
             log.log("Listen tapped (auto-listen \(settings.autoListen ? "on" : "off"), status \(status.rawValue))")
             startFlow { [self] in try await conversation() }
         }
+    }
+
+    /// Cancels the coach's answer (button tap) and listens again, or goes idle when auto-listen is off or paused.
+    private func stopAnswer() {
+        log.log("Stop tapped: cancelling the coach's answer")
+        cancelFlow()
+        status = .idle
+        if shouldRelisten { startFlow { [self] in try await conversation() } }
     }
 
     private func pause(_ reason: String) {
@@ -194,7 +211,7 @@ final class GameController: ObservableObject {
     }
 
     /// Whether to listen again after the current turn.
-    private var shouldRelisten: Bool { settings.autoListen && !paused && game?.gameOver != true }
+    private var shouldRelisten: Bool { settings.autoListen && !paused }
 
     private func startFlow(_ body: @escaping @MainActor () async throws -> Void) {
         cancelFlow()
@@ -228,6 +245,7 @@ final class GameController: ObservableObject {
         flow?.cancel()
         flow = nil
         flowActive = false
+        answering = false
         speaker.stop()
         listener.cancel()
     }
@@ -326,10 +344,6 @@ final class GameController: ObservableObject {
             try await speak("No game in progress. Say new game.")
             return
         }
-        guard !game.gameOver else {
-            try await speak("The game is over. Say new game.")
-            return
-        }
         status = .thinking
         let response = try await makeAPI().say(gameID: game.id, transcript: text, confirm: settings.confirmBeforePlay)
         // The server has already played the move: keep the board in sync even if the flow was stopped.
@@ -351,6 +365,8 @@ final class GameController: ObservableObject {
             }
         case let .noMatch(message):
             try await speak(message)
+        case let .question(question):
+            try await ask(question, gameID: game.id)
         }
     }
 
@@ -388,6 +404,9 @@ final class GameController: ObservableObject {
         switch command {
         case .newGame:
             try await beginNewGame()
+        case .stop:
+            // Only heard while listening, when no answer is playing; it must never reach /say.
+            log.log("Stop heard while listening: nothing to stop")
         case .repeatLast:
             try await speak(lastSpoken.isEmpty ? "Nothing to repeat." : lastSpoken)
         case .readBoard, .readMyPieces:
@@ -410,6 +429,92 @@ final class GameController: ObservableObject {
         }
     }
 
+    // MARK: Coach
+
+    private typealias AnswerStream = AsyncThrowingStream<AskEvent, Error>
+    private static let coachOff = "Coach is off"
+    private static let lostConnection = "Sorry, I lost the connection"
+
+    /// Sends `question` to the coach and speaks the answer sentence by sentence as it streams in.
+    /// The board is not touched. A broken stream is spoken once; other failures propagate to `guarded`.
+    private func ask(_ question: String, gameID: String) async throws {
+        coachQuestion = question
+        coachAnswer = ""
+        guard settings.askCoach else {
+            log.log("Question ignored: ask the coach is off")
+            coachAnswer = Self.coachOff
+            try await speak(Self.coachOff)
+            return
+        }
+        let api = try makeAPI()
+        let id = flowID
+        answering = true
+        defer { if flowID == id { answering = false } }
+        status = .thinking
+        log.log("Ask: '\(question)'")
+
+        // The reader takes sentences off the network as they arrive and starts fetching the speech
+        // for each one after the first, while the loop below speaks them one after another.
+        let (sentences, relay) = Self.makeRelay()
+        let reader = Task { [weak self] in
+            var count = 0
+            do {
+                for try await event in api.ask(gameID: gameID, question: question) {
+                    switch event {
+                    case let .sentence(text):
+                        count += 1
+                        if count > 1 { self?.speaker.prefetch(text) }
+                        self?.appendCoach(text)
+                    case let .error(message):
+                        self?.appendCoach(message)
+                    case .done:
+                        break
+                    }
+                    relay.yield(event)
+                }
+                relay.finish()
+            } catch {
+                relay.finish(throwing: error)
+            }
+        }
+        defer { reader.cancel() }
+
+        var spoken = 0
+        do {
+            for try await event in sentences {
+                switch event {
+                case let .sentence(text):
+                    spoken += 1
+                    try await speak(text)
+                case let .error(message):
+                    log.log("Ask: coach reported an error: \(message)")
+                    try await speak(message)
+                case .done:
+                    log.log("Ask done: \(spoken) sentences spoken")
+                }
+            }
+        } catch let error as APIError where spoken > 0 {
+            log.log("Ask stream broke after \(spoken) sentences: \(error.localizedDescription)")
+            appendCoach(Self.lostConnection)
+            try await speak(Self.lostConnection)
+        }
+    }
+
+    private func appendCoach(_ text: String) {
+        coachAnswer += coachAnswer.isEmpty ? text : " " + text
+    }
+
+    private func clearCoach() {
+        coachQuestion = ""
+        coachAnswer = ""
+    }
+
+    private static func makeRelay() -> (AnswerStream, AnswerStream.Continuation) {
+        var continuation: AnswerStream.Continuation!
+        let stream = AnswerStream { continuation = $0 }
+        return (stream, continuation)
+    }
+
     // MARK: Game
 
     private func beginNewGame() async throws {
@@ -421,6 +526,7 @@ final class GameController: ObservableObject {
         transcript = ""
         playerLine = ""
         botLine = created.botMove?.spoken ?? ""
+        clearCoach()
         silentCycles = 0
         refreshHints()
         var text = "You are \(created.state.player)."
@@ -441,6 +547,7 @@ final class GameController: ObservableObject {
         game = result.state
         playerLine = result.playerMove.spoken
         botLine = result.botMove?.spoken ?? ""
+        clearCoach()
         refreshHints()
         var parts: [String] = []
         if let bot = result.botMove { parts.append(bot.spoken) }
@@ -497,7 +604,12 @@ final class GameController: ObservableObject {
             log.log("API error: \(error.localizedDescription)")
             switch error {
             case .unreachable: try await speak("Cannot reach the server")
-            case let .server(status, detail): try await speak(status >= 500 ? "Server error" : detail)
+            case let .server(status, detail):
+                if status == 409, game?.gameOver == true {
+                    try await speak("The game is over. Ask me about it.")
+                } else {
+                    try await speak(status >= 500 ? "Server error" : detail)
+                }
             case .invalidResponse: try await speak("Unexpected server response")
             }
             return false
